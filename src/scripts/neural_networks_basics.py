@@ -27,9 +27,9 @@ def add_awgn_noise(signal, snr_db):
     return noisy_signal
 
 # Load the data from the provided file
-time, amplitude = load_thz_data('Spektrum_THz.txt')
+time, amplitude = load_thz_data('C:/Users/leots/OneDrive/Desktop/master EIT/masterarbeit/RNN_Like_ISTA/Spektrum_THz.txt')
 test_data = np.concatenate([amplitude,amplitude,amplitude,amplitude,amplitude,amplitude,amplitude,amplitude,amplitude,amplitude, amplitude, amplitude, amplitude, amplitude, amplitude, amplitude, amplitude])
-x_test_data = np.arange(len(test_data))
+#x_test_data = np.arange(len(test_data))
 
 # Add AWGN noise to the amplitude data
 snr_db = 10  # Desired SNR in dB
@@ -104,9 +104,9 @@ class ISTA_RNN(tf.keras.Model):
         return recovered_signal, hidden_state
 
 # Hyperparameters
-hidden_size = 16  # Number of hidden units
+hidden_size = 64  # Number of hidden units
 batch_size = 8
-num_epochs = 10
+num_epochs = 5
 learning_rate = 1e-4  # Increased for faster convergence
 dropout_rate = 0.3  # Dropout rate for regularization
 lambda_value = 0.1  # L1 regularization weight (sparsity term)
@@ -120,16 +120,16 @@ ista_rnn_model.compile(optimizer=optimizers.Adam(learning_rate), loss=CustomLoss
 early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
 
 # Train the model on the noisy data
-history = ista_rnn_model.fit(labels, test_data, batch_size=batch_size, epochs=num_epochs, validation_data=(labels_test, test_data), callbacks=[early_stopping])
+history = ista_rnn_model.fit(labels, test_data, batch_size=batch_size, epochs=num_epochs, validation_data=(test_data, labels_test), callbacks=[early_stopping])
 
 # Print the history
 print(history.history.keys())
 
 # Evaluate the model
-test_loss = ista_rnn_model.evaluate(y_data)
+test_loss = ista_rnn_model.evaluate(amplitude_noisy, y_data)
 print(f"Test Loss: {test_loss}")
 
-# Predict the recovered signal on the noisy test data
+# Predict the recovered signal
 predictions, _ = ista_rnn_model.predict(y_data)
 
 # Noise Reduction on Recovered Signal using Savitzky-Golay Filter (smooth out the signal)
