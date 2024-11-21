@@ -28,7 +28,7 @@ def add_awgn_noise(signal, snr_db):
 
 # Load the data from the provided file
 time, amplitude = load_thz_data('C:/Users/leots/OneDrive/Desktop/master EIT/masterarbeit/RNN_Like_ISTA/Spektrum_THz.txt')
-test_data = np.concatenate([amplitude,amplitude,amplitude,amplitude,amplitude,amplitude,amplitude,amplitude,amplitude,amplitude, amplitude, amplitude, amplitude, amplitude, amplitude, amplitude, amplitude])
+test_data = np.concatenate([amplitude,amplitude,amplitude])
 #x_test_data = np.arange(len(test_data))
 
 # Add AWGN noise to the amplitude data
@@ -104,11 +104,11 @@ class ISTA_RNN(tf.keras.Model):
         return recovered_signal, hidden_state
 
 # Hyperparameters
-hidden_size = 64  # Number of hidden units
+hidden_size = 16  # Number of hidden units
 batch_size = 8
-num_epochs = 5
+num_epochs = 10
 learning_rate = 1e-4  # Increased for faster convergence
-dropout_rate = 0.3  # Dropout rate for regularization
+dropout_rate = 0.2  # Dropout rate for regularization
 lambda_value = 0.1  # L1 regularization weight (sparsity term)
 
 # Instantiate the model
@@ -117,7 +117,7 @@ ista_rnn_model = ISTA_RNN(hidden_size, dropout_rate)
 # Compile the model
 ista_rnn_model.compile(optimizer=optimizers.Adam(learning_rate), loss=CustomLoss(lambda_value))
 # Define early stopping callback
-early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+early_stopping = EarlyStopping(monitor='val_loss', patience=5,restore_best_weights=True)
 
 # Train the model on the noisy data
 history = ista_rnn_model.fit(labels, test_data, batch_size=batch_size, epochs=num_epochs, validation_data=(test_data, labels_test), callbacks=[early_stopping])
