@@ -1,0 +1,17 @@
+digraph UML_Sequence_Diagram {
+	InputData [shape=rect]
+	LoadData [label="Load Data" shape=rect]
+	PreprocessData [label="Preprocess Data" shape=rect]
+	ISTA_RNN [shape=rect]
+	CustomLoss [label="L2 loss + L1 regularization" shape=rect]
+	SoftThresholdLayer [shape=rect]
+	PostProcess [label="Post-process Output" shape=rect]
+	InputData -> LoadData [label="load_thz_data()"]
+	LoadData -> PreprocessData [label="standardize()"]
+	PreprocessData -> ProcessData
+	ProcessData -> ISTA_RNN [label="train()"]
+	ISTA_RNN -> CustomLoss [label="combine L2(MS loss) + L1 (sparsity penalty)"]
+	ISTA_RNN -> SoftThresholdLayer [label="apply threshold()"]
+	ISTA_RNN -> Predict [label="return predictions"]
+	Predict -> PostProcess [label="save and display results"]
+}
