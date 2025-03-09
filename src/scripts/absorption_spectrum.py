@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 from scipy.constants import speed_of_light
 from elli.kkr.kkr import im2re, im2re_reciprocal
 from scipy.signal.windows import tukey
+#from scipy.signal import resample
 
 plot = True
 
@@ -23,7 +24,7 @@ speed_of_light_cmps = speed_of_light*100    # Speed of light in cm^-1
 dt = 33.3333e-15                            # Target sampling frequency
 impulse_response_length = 1*1e-9            # Duration of desired impulse response
 
-count_of_timepoints = int(np.floor(impulse_response_length / dt))
+count_of_timepoints = int(np.floor(impulse_response_length / dt/ 3))
 freq_vector = np.fft.rfftfreq(count_of_timepoints, dt)
 t_vector = np.arange(count_of_timepoints)*dt
 w_vector = 2*np.pi*freq_vector
@@ -86,11 +87,11 @@ concentrations = {
 db_begin('data')
 
 # Get Molecules and save into database, have to be fetched one time for
-fetch('N2', 22, 1, start_nu, stop_nu)
-fetch('O2', 7, 1, start_nu, stop_nu)
-fetch('CO2', 2, 1, start_nu, stop_nu)
-fetch('H2O', 1, 1, start_nu, stop_nu)
-fetch('Ar', 1, 1, start_nu, stop_nu)
+# fetch('N2', 22, 1, start_nu, stop_nu)
+# fetch('O2', 7, 1, start_nu, stop_nu)
+# fetch('CO2', 2, 1, start_nu, stop_nu)
+# fetch('H2O', 1, 1, start_nu, stop_nu)
+# fetch('Ar', 1, 1, start_nu, stop_nu)
 
 # Calculate spectras for every molecule
 absorption_coeffs = 0
@@ -147,117 +148,126 @@ refractive_index = refractive_index + 1.0027
 # defining complex refractive index
 complex_refractive_index = refractive_index + 1j*exctinction_coeffs
 
-distance = 1  # In m
-transfer_function = np.exp(distance*1j*complex_refractive_index*w_vector/speed_of_light)*np.exp(-distance*1j*1.0027*w_vector/speed_of_light)
-transfer_function_noisy = np.random.normal(size=transfer_function.size)*0.001+transfer_function
-transfer_function = np.abs(transfer_function)*np.exp(-1j*np.angle(transfer_function))
+# Define distance range
+distances = np.arange(0.3, 0.595 + 0.005, 0.001)  # 30 cm to 60 cm, step 5 mm
 
-if plot:
-    # Plot Attenuation for 1km through water vapor without Continuum Spectrum
-    transfer_function_1m = np.exp(1*1j*complex_refractive_index*w_vector/speed_of_light)*np.exp(-distance*1j*1.0027*w_vector/speed_of_light)
-    transfer_function_1m = np.abs(transfer_function_1m) * np.exp(-1j * np.angle(transfer_function_1m))
-    transfer_function_1m_noisy = np.random.normal(size=transfer_function_1m.size) * 0.001 + transfer_function_1m
-    plt.figure()
-    plt.plot(freq_vector*1e-9, 1000*20*np.log10(np.abs(1/transfer_function_1m)), label="Absolute value of transfer function")
-    # plt.plot(freq_vector, 20*np.log10(np.abs(1/transfer_function_noisy)), label="Absolute value of transfer function - Noisy")
-    # plt.plot(frequency_vector,np.real(transfer_function),"--",label="Real part of transfer function")
-    # plt.plot(frequency_vector,np.imag(transfer_function),"--",label="Imaginary partof transfer function")
-    plt.title("visualizing magnitude of transfer function of water vapour absorption model")
-    plt.ylabel("Attenuation in dB / km")
-    plt.xlabel("Frequency (THz)")
-    plt.yscale("log")
-    # plt.xscale("log")
-    plt.ylim([0.0001, 2e5])
-    plt.xlim([0, 2500])
-    plt.grid()
-    plt.legend()
+# Placeholder to store transfer functions for each distance
+transfer_functions = []
 
-    # Plot Transferfunction for 1m
-    plt.figure()
-    # plt.plot(freq_vector*1e-9,20*np.log10(np.abs(transfer_function)),label="Absolute value of transfer function")
-    plt.plot(freq_vector*1e-9, np.unwrap(np.angle(transfer_function_1m)), label="Transferfunction 1m")
-    plt.plot(freq_vector*1e-9, np.unwrap(np.angle(transfer_function_1m_noisy)),label="Transferfunction 1m - With Noise")
-    # plt.plot(frequency_vector,np.real(transfer_function),"--",label="Real part of transfer function")
-    # plt.plot(frequency_vector,np.imag(transfer_function),"--",label="Imaginary partof transfer function")
-    plt.title("visualizing magnitude of transfer function of water vapour absorption model")
-    plt.ylabel("Phase / rad")
-    plt.xlabel("Frequency (THz)")
-    plt.legend()
+for distance in distances:
+    # Compute transfer function for the current distance
+    transfer_function = np.exp(distance * 1j * complex_refractive_index * w_vector / speed_of_light) * \
+                        np.exp(distance * 1j * 1.0027 * w_vector / speed_of_light)
+    transfer_function_noisy = np.random.normal(size=transfer_function.size) * 0.001 + transfer_function
+    transfer_function = np.abs(transfer_function) * np.exp(-1j * np.angle(transfer_function))
+    transfer_functions.append(transfer_function)
 
-    td_1m = np.fft.irfft(transfer_function_1m)
-    td_1m = np.roll(td_1m, int(td_1m.size/2))
+    if plot==0:
+        # Plot Attenuation for the current distance
+        transfer_function_1m = np.exp(distance * 1j * complex_refractive_index * w_vector / speed_of_light) * \
+                               np.exp(-distance * 1j * 1.0027 * w_vector / speed_of_light)
+        transfer_function_1m = np.abs(transfer_function_1m) * np.exp(-1j * np.angle(transfer_function_1m))
+        transfer_function_1m_noisy = np.random.normal(size=transfer_function_1m.size) * 0.001 + transfer_function_1m
+        
+        plt.figure()
+        plt.plot(freq_vector * 1e-9, 1000 * 20 * np.log10(np.abs(1 / transfer_function_1m)),
+                 label=f"Distance: {distance * 100:.1f} cm")
+        plt.title("Visualizing Magnitude of Transfer Function of Water Vapor Absorption Model")
+        plt.ylabel("Attenuation in dB / km")
+        plt.xlabel("Frequency (THz)")
+        plt.yscale("log")
+        plt.ylim([0.0001, 2e5])
+        plt.xlim([0, 2500])
+        plt.grid()
+        plt.legend()
 
-    maxpos = np.argmax(np.abs(td_1m))
-    window = np.zeros_like(td_1m)
-    window[maxpos - 200:maxpos + 2200] = tukey(2200 + 200, 0.05)
+        # Plot Phase for the current distance
+        plt.figure()
+        plt.plot(freq_vector * 1e-9, np.unwrap(np.angle(transfer_function_1m)), label=f"Transfer Function {distance * 100:.1f} cm")
+        plt.plot(freq_vector * 1e-9, np.unwrap(np.angle(transfer_function_1m_noisy)), label=f"Transfer Function {distance * 100:.1f} cm - Noisy")
+        plt.title("Phase of Transfer Function")
+        plt.ylabel("Phase (rad)")
+        plt.xlabel("Frequency (THz)")
+        plt.legend()
 
-    tdwindowd_1m = td_1m * window
+        # Impulse Response
+        td_1m = np.fft.irfft(transfer_function_1m)
+        td_1m = np.roll(td_1m, int(td_1m.size / 2))
+        maxpos = np.argmax(np.abs(td_1m))
+        window = np.zeros_like(td_1m)
+        # Compute start and end indices safely
+        start_idx = max(0, maxpos - 200)
+        end_idx = min(window.size, maxpos + 2200)
+        
+        # Create a Tukey window of the appropriate size
+        tukey_window = tukey(end_idx - start_idx, 0.05)
+        
+        # Assign the Tukey window to the appropriate slice of the `window` array
+        window[start_idx:end_idx] = tukey_window
+        window[maxpos - 200:maxpos + 2200] = tukey(2200 + 200, 0.05)
+        tdwindowd_1m = td_1m * window
 
-    # tdwindowd_1m = np.roll(tdwindowd_1m, -int(tdwindowd_1m.size/2))
+        # Plot Impulse Response
+        plt.figure()
+        plt.plot(t_vector * 1e12, np.real(td_1m), label="Unwindowed")
+        plt.plot(t_vector * 1e12, np.real(tdwindowd_1m), label="Windowed")
+        plt.title("Impulse Response for Water Vapor")
+        plt.xlabel("Delay Time (ps)")
+        plt.ylabel("Amplitude")
+        plt.legend()
+        plt.grid()
+        plt.xlim(490, 700)
 
-    # Plot difference between windowed and unwindowed
-    plt.figure()
-    plt.plot(t_vector*1e12, (np.real(td_1m)), label="Unwindowed")
-    plt.plot(t_vector*1e12, (np.real(tdwindowd_1m)), label="Windowed")
-    plt.title("Impulse response of water vapor for 1m travel distance")
-    plt.xlabel("delay time / ps")
-    plt.grid()
-    plt.ylabel("amplitude")
-    plt.legend()
-    plt.xlim(490,700)
-    plt.figure()
+        # Magnitude of Impulse Response
+        plt.figure()
+        plt.plot(t_vector * 1e12, 20 * np.log10(np.abs(np.real(td_1m))), label="Unwindowed")
+        plt.plot(t_vector * 1e12, 20 * np.log10(np.abs(np.real(tdwindowd_1m))), label="Windowed")
+        plt.xlabel("Delay Time (ps)")
+        plt.ylabel("Magnitude")
+        plt.legend()
+        plt.grid()
+
+        # Frequency Response
+        plt.figure()
+        plt.plot(freq_vector * 1e-9, 20 * np.log10(np.abs(np.fft.rfft(np.real(td_1m)))), label="Unwindowed")
+        plt.plot(freq_vector * 1e-9, 20 * np.log10(np.abs(np.fft.rfft(np.real(tdwindowd_1m)))), label="Windowed")
+        plt.xlabel("Frequency (GHz)")
+        plt.ylabel("Magnitude")
+        plt.legend()
+        plt.grid()
 
 
-    plt.figure()
-    plt.plot(t_vector*1e12, 20*np.log10(np.abs(np.real(td_1m))), label="Unwindowed")
-    plt.plot(t_vector*1e12, 20*np.log10(np.abs(np.real(tdwindowd_1m))), label="Windowed")
-    plt.xlabel("delay time / ps")
-    plt.ylabel("magnitude")
-    plt.grid()
-    plt.legend()
+# Perform convolution with trace for each distance
+for i, distance in enumerate(distances):
+    td = np.fft.irfft(transfer_functions[i])
+    td = td.astype(np.complex128)
+    trace = dgmm(t_vector, 100e-12, -670.81e-12, -670.39e-12, 0.19, 0.24, -5.43, 3.82)
+    #trace = resample(trace, 3000)
+    trace = trace.astype(np.complex128)
+    convolved = np.convolve(trace, td, mode="full")
+    convolved = convolved[0:trace.size]
+    if plot==0:
+        # Convolved Signal
+        plt.figure()
+        plt.plot(t_vector * 1e12, trace, label="Generic THz-pulse")
+        plt.plot(t_vector * 1e12, convolved, label=f"Convolved Pulse (Distance: {distance * 100:.1f} cm)")
+        plt.plot(t_vector*1e12, np.real(np.fft.irfft(np.fft.rfft(trace)*transfer_functions[i])), label="TF Calculated")
+        plt.ylabel("Amplitude (a.u.)")
+        plt.xlabel("Delay Time (ps)")
+        plt.xlim(98, 115)
+        plt.legend()
+        plt.grid()
 
-    plt.figure()
-    plt.plot(freq_vector * 1e-9, 20 * np.log10(np.abs(np.fft.rfft(np.real(td_1m)))), label="Unwindowed")
-    plt.plot(freq_vector * 1e-9, 20 * np.log10(np.abs(np.fft.rfft(np.real(tdwindowd_1m)))), label="Windowed")
-    plt.xlabel("frequency / GHz")
-    plt.ylabel("magnitude")
-    plt.grid()
-    plt.legend()
+        # Frequency Magnitude Comparison
+        plt.figure()
+        plt.plot(freq_vector * 1e-9, 20 * np.log10(np.abs(np.fft.rfft(trace))), label="Original Trace")
+        plt.plot(freq_vector * 1e-9, 20 * np.log10(np.abs(np.fft.rfft(convolved))), label=f"Convolved Trace (Distance: {distance * 100:.1f} cm)")
+        plt.plot(freq_vector * 1e-9, 20*np.log10(np.abs(np.fft.rfft(trace)*transfer_functions[i])), label="Multiplied TF")
+        plt.ylabel("Magnitude (a.u. dB)")
+        plt.xlabel("Frequency (GHz)")
+        plt.legend()
+        plt.grid()
+        plt.xlim(0, 8000)
 
-td = np.fft.irfft(transfer_function)
-# td = np.flip(td)
-td = td.astype(np.complex128)
-# Here, the trace is plotted at the position 100e-12
-# The window is generated for the whole t_vector and is then convolved with the response of the water vapor
-trace = dgmm(t_vector, 100e-12, -670.81e-12, -670.39e-12, 0.19, 0.24, -5.43, 3.82)
-trace = trace.astype(np.complex128)
-
-convolved = np.convolve(trace, td, mode="full")
-convolved = convolved[0:trace.size]
-print(convolved.dtype)
-print(trace.dtype)
-print(transfer_function.dtype)
-
-if plot:
-    plt.figure()
-    plt.plot(t_vector*1e12, trace, label="Generic THz-pulse")
-    plt.plot(t_vector*1e12, convolved, label="Convolved Generic THz-pulse with water wavpor")
-    plt.plot(t_vector*1e12, np.real(np.fft.irfft(np.fft.rfft(trace)*transfer_function)), label="TF Calculated")
-    plt.ylabel("amplitude / a.u.")
-    plt.xlabel("delay time / ps")
-    plt.xlim(98, 115)
-    plt.legend()
-    plt.grid()
-    plt.figure()
-
-    plt.figure()
-    plt.plot(freq_vector * 1e-9, 20*np.log10(np.abs(np.fft.rfft(trace))), label="Original Trace")
-    plt.plot(freq_vector * 1e-9, 20*np.log10(np.abs(np.fft.rfft(convolved))), label="Convolved Trace")
-    plt.plot(freq_vector * 1e-9, 20*np.log10(np.abs(np.fft.rfft(trace)*transfer_function)), label="Multiplied TF")
-    plt.ylabel("magnitude / a.u. dB.")
-    plt.xlabel("frequency / GHz")
-    plt.legend()
-    plt.grid()
-    plt.xlim(0, 8000)
 
 plt.show()
