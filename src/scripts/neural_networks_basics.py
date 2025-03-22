@@ -156,7 +156,7 @@ max_indices = np.argmax(val_data, axis=2)
 labels_2 = tf.convert_to_tensor(max_indices, dtype=tf.float32)
 X_val = val_data
 Y_val = labels_2
-history = ista_rnn_model.fit(test_data, labels, batch_size=batch_size, epochs=num_epochs, validation_data=(X_val, Y_val), callbacks=[early_stopping, lr_scheduler])
+history = ista_rnn_model.fit(test_data, max_indices.T, batch_size=batch_size, epochs=num_epochs, validation_data=(X_val, Y_val), callbacks=[early_stopping, lr_scheduler])
 
 # Print the history
 print(history.history.keys())

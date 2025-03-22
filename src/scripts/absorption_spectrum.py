@@ -24,7 +24,7 @@ speed_of_light_cmps = speed_of_light*100    # Speed of light in cm^-1
 dt = 33.3333e-15                            # Target sampling frequency
 impulse_response_length = 1*1e-9            # Duration of desired impulse response
 
-count_of_timepoints = int(np.floor(impulse_response_length / dt/ 3))
+count_of_timepoints = int(np.floor(impulse_response_length / dt))
 freq_vector = np.fft.rfftfreq(count_of_timepoints, dt)
 t_vector = np.arange(count_of_timepoints)*dt
 w_vector = 2*np.pi*freq_vector
@@ -149,7 +149,7 @@ refractive_index = refractive_index + 1.0027
 complex_refractive_index = refractive_index + 1j*exctinction_coeffs
 
 # Define distance range
-distances = np.arange(0.3, 0.595 + 0.005, 0.001)  # 30 cm to 60 cm, step 5 mm
+distances = np.arange(0.3, 0.329 + 0.001, 0.001)  # 30 cm to 60 cm, step 1 mm
 
 # Placeholder to store transfer functions for each distance
 transfer_functions = []
