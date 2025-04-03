@@ -33,9 +33,9 @@ class ISTA_RNN(tf.keras.Model):
         super(ISTA_RNN, self).__init__()
         self.We = layers.Dense(input_dim, use_bias=False)
         self.hidden = layers.Dense(input_dim, activation='relu')
-        self.dropout = layers.Dropout(0.3)
+        self.dropout = layers.Dropout(0.5)
         self.reconstruction = layers.Dense(input_dim)
-        self.peak_output = layers.Dense(1, activation='linear')
+        self.peak_output = layers.Dense(1, activation='relu')
         self.soft_threshold = SoftThresholdLayer(threshold)  # the soft-thresholding
 
     def call(self, inputs, hidden_state=None, training=False):
@@ -104,8 +104,8 @@ input_dim = tf.shape(train_data)[1]
 ista_rnn_model = ISTA_RNN(input_dim)
 ista_rnn_model.compile(
     optimizer='adam',
-    loss=CustomLoss(0.01)  #{'reconstruction': 'mse', 'peak': 'mse'},
-    #loss_weights={'reconstruction': 1.0, 'peak': 0.01}
+    loss=CustomLoss(0.01),  #{'reconstruction': 'mse', 'peak': 'mse'},
+    loss_weights={'reconstruction': 1.0, 'peak': 0.01}
 )
 
 # Define early stopping and learning rate scheduler
@@ -117,7 +117,7 @@ history = ista_rnn_model.fit(
     {'reconstruction': train_data, 'peak': peak_positions_train},
     validation_data=(val_data, {'reconstruction': val_data, 'peak': peak_positions_val}),
     batch_size=32,
-    epochs=100,
+    epochs=500,
     callbacks=[early_stopping, lr_scheduler]
 )
 
