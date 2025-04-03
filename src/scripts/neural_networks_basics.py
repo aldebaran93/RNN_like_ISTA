@@ -1,59 +1,10 @@
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras import layers, optimizers, regularizers
+from tensorflow.keras import layers, Model, optimizers
 import matplotlib.pyplot as plt
-import datetime
-from scipy.signal import savgol_filter
-from tensorflow.keras.layers import Dense, Dropout, BatchNormalization
-from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
-from scipy.signal import resample
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, precision_score, recall_score
 from absorption_spectrum import *
 
-# Load THz data from .txt file
-def load_thz_data(file_path):
-    data = np.loadtxt(file_path)
-    time = data[:, 0]  # Time data
-    amplitude = data[:, 1]  # THz signal amplitude
-    return time, amplitude
-
-# AWGN Noise function
-def add_awgn_noise(signal, snr_db):
-    """
-    Adds AWGN noise to the signal with a given SNR (in dB).
-    """
-    signal_power = np.mean(signal**2)
-    snr_linear = 10**(snr_db / 10.0)
-    noise_power = signal_power / snr_linear
-    noise = np.sqrt(noise_power) * np.random.normal(size=signal.shape)
-    noisy_signal = signal + noise
-    return noisy_signal
-
-# Define peak detection function (dummy example for labels)
-def find_peaks(data, threshold=1):
-    peaks = np.where(data > threshold)[0]
-    return peaks
-
-def standardize(data):
-    return (data - np.mean(data)) / np.std(data)
-
-# Load the data from the provided file
-# time, amplitude = load_thz_data('C:/Users/leots/OneDrive/Desktop/master EIT/masterarbeit/RNN_Like_ISTA/Spektrum_THz.txt')
-
-# Define custom loss function combining L2 loss and L1 regularization
-class CustomLoss(tf.keras.losses.Loss):
-    def __init__(self, lambda_value):
-        super(CustomLoss, self).__init__()
-        self.lambda_value = lambda_value
-
-    def call(self, y_true, y_pred):
-        # L2 loss (squared error)
-        l2_loss = tf.reduce_mean(tf.square(y_true - y_pred))
-        # L1 regularization (sparsity penalty)
-        l1_loss = self.lambda_value * tf.reduce_sum(tf.abs(y_pred))
-        # Combined loss
-        return l2_loss + l1_loss
-
+# Custom soft-thresholding layer
 class SoftThresholdLayer(layers.Layer):
     def __init__(self, threshold):
         super(SoftThresholdLayer, self).__init__()
@@ -62,147 +13,223 @@ class SoftThresholdLayer(layers.Layer):
     def call(self, inputs):
         return tf.sign(inputs) * tf.maximum(tf.abs(inputs) - self.threshold, 0.0)
 
-# Define the RNN-like ISTA model with Dropout
-class ISTA_RNN(tf.keras.Model):
-    def __init__(self, hidden_size, dropout_rate=0.3, threshold=0.1):
+# Custom loss that combines reconstruction (L2) and L1 sparsity penalty.
+class CustomLoss(tf.keras.losses.Loss):
+    def __init__(self, lambda_value):
+        super(CustomLoss, self).__init__()
+        self.lambda_value = lambda_value
+
+    def call(self, y_true, y_pred):
+        l2_loss = tf.reduce_mean(tf.square(y_true - y_pred))
+        l1_loss = self.lambda_value * tf.reduce_sum(tf.abs(y_pred))
+        return l2_loss + l1_loss
+
+# ISTA-RNN Model with BPTT integration (focused on peak prediction)
+class ISTA_RNN(Model):
+    def __init__(self, input_dim, num_iterations=10, threshold=0.01):
         super(ISTA_RNN, self).__init__()
-        self.hidden_size = hidden_size
-        self.We = layers.Dense(hidden_size, activation='relu', kernel_regularizer=regularizers.l2(0.01))  # Linear transformation
-        self.S = layers.Dense(hidden_size, activation='relu', kernel_regularizer=regularizers.l2(0.01))   # Recurrent transformation
-        self.dropout = layers.Dropout(dropout_rate)  # Dropout layer for regularization
-        self.output_layer = layers.Dense(1, activation='linear')  # Output layer predicting the recovered signal
-        self.soft_threshold = SoftThresholdLayer(threshold)  # the soft-thresholding
-
-    def call(self, inputs, hidden_state=None, training=None):
-        batch_size = tf.shape(inputs)[0]  # Dynamic batch size handling
-        if hidden_state is None:
-            hidden_state = tf.zeros((batch_size, self.hidden_size))
+        self.num_iterations = num_iterations
+        self.input_dim = input_dim
         
-        if len(inputs.shape) == 1:
-            inputs = tf.expand_dims(inputs, axis=-1)  # Add dimension if needed
-
-        # Linear transformation (ISTA step)
-        x = self.We(inputs)
+        # Shared layers for the iterative update
+        self.We = layers.Dense(input_dim, use_bias=False)
+        self.hidden = layers.Dense(input_dim, activation='tanh')
+        self.dropout = layers.Dropout(0.3)
+        self.soft_threshold = SoftThresholdLayer(threshold)
         
-        # Recurrent transformation with dropout
-        hidden_state = self.S(hidden_state) + x
-        hidden_state = self.soft_threshold(hidden_state)
+        # Two branches: one for reconstruction and one for peak prediction
+        self.reconstruction = layers.Dense(input_dim, activation='linear')
+        # For peak prediction, use a single unit with linear activation.
+        self.peak_output = layers.Dense(1, activation='linear')
 
-        # Apply dropout during training
-        if training:
-            hidden_state = self.dropout(hidden_state, training=training)
+    def call(self, inputs, training=False):
+        batch_size = tf.shape(inputs)[0]
+        hidden_state = tf.zeros((batch_size, self.input_dim))
         
-        # Predict the recovered signal
-        recovered_signal = self.output_layer(hidden_state)
-        return recovered_signal, hidden_state
+        # Unroll ISTA iterations
+        for t in range(self.num_iterations):
+            x = self.We(inputs)
+            hidden_state = self.hidden(hidden_state) + x
+            hidden_state = self.soft_threshold(hidden_state)
+            if training:
+                hidden_state = self.dropout(hidden_state, training=training)
+        
+        # Reconstruction branch uses the final hidden state.
+        recon = self.reconstruction(hidden_state)
+        # Peak branch also uses the final hidden state.
+        peak = self.peak_output(hidden_state)
+        return {'reconstruction': recon, 'peak': peak}
 
-# Hyperparameters
-hidden_size = 64  # Number of hidden units
-batch_size = 32
-num_epochs = 10000
-learning_rate = 1e-4  # Increased for faster convergence
-dropout_rate = 0.2  # Dropout rate for regularization
-lambda_value = 0.01  # Reduced L1 regularization weight (sparsity term)
-distance_losses = []  # To store loss values
+# Define a custom peak accuracy metric with tolerance.
+def peak_accuracy(y_true, y_pred, tolerance=2):
+    # Round the predictions to the nearest integer
+    y_pred_int = tf.cast(tf.round(y_pred), tf.int32)
+    y_true_int = tf.cast(y_true, tf.int32)
+    # Allow for a tolerance in samples
+    correct = tf.less_equal(tf.abs(y_pred_int - y_true_int), tolerance)
+    return tf.reduce_mean(tf.cast(correct, tf.float32))
 
-# Plot of the original THz trace
-plt.figure(figsize=(10, 6))
-plt.plot(trace, label='Original received THz Signal')
-plt.legend()
-plt.xlabel('Sample Index')
-plt.ylabel('Amplitude')
-plt.title('original received THz Signal')
-plt.grid(True)
-plt.show()
+# Example windowing function and data processing (unchanged)
+def windowing(data):
+    window_size = 3528
+    threshold = 1
+    pulse_windows = []
+    pulse_positions = []
+    for seq_idx, sequence in enumerate(data):
+        found_pulse = False
+        for i in range(2000, len(sequence) - window_size + 1, window_size):
+            window = sequence[i:i + window_size]
+            if np.max(window) > threshold:
+                pulse_windows.append(window)
+                # Use the index relative to the window (i.e. argmax within the window)
+                pulse_positions.append(np.argmax(window))
+                found_pulse = True
+                break
+        if not found_pulse:
+            pulse_windows.append(np.zeros(window_size))
+            pulse_positions.append(0)
+    return np.array(pulse_windows), np.array(pulse_positions)
 
+# Assume trace, transfer_functions, complex_refractive_index, w_vector, speed_of_light
+# are defined externally.
 test_data = np.real(np.fft.irfft(np.fft.rfft(trace) * transfer_functions))
-test_data = test_data.reshape(test_data.shape[0], 1, test_data.shape[1])
-test_data = standardize(test_data)
-test_data = tf.convert_to_tensor(test_data, dtype=tf.float32)
+train_data_np, peak_positions_train_np = windowing(test_data)
 
+# Process validation data (as before)
 transfer_functions_val = []
-distances = np.arange(0.3, 0.595 + 0.005, 0.001) # 30 cm to 60 cm, step 1 mm
-for distance in distances:
-    # Compute transfer function for the current distance
+distances_2 = np.arange(0.3, 0.329 + 0.001, 500e-6)
+for distance in distances_2:
     transfer_function_val = np.exp(distance * 1j * complex_refractive_index * w_vector / speed_of_light) * \
-                        np.exp(distance * 1j * 1.0027 * w_vector / speed_of_light)
+                            np.exp(distance * 1j * 1.0027 * w_vector / speed_of_light)
     transfer_function_val = np.abs(transfer_function_val) * np.exp(-1j * np.angle(transfer_function_val))
     transfer_functions_val.append(transfer_function_val)
 
-val_data = np.real(np.fft.irfft(np.fft.rfft(trace) * transfer_functions_val))
-val_data = val_data.reshape(val_data.shape[0], 1, val_data.shape[1])
-val_data = standardize(val_data)
+val_data_np, peak_positions_val_np = windowing(np.real(np.fft.irfft(np.fft.rfft(trace) * transfer_functions_val)))
 
-# Labels
-max_indices = np.argmax(test_data, axis=2)
-labels = tf.convert_to_tensor(max_indices, dtype=tf.float32)
+train_data = tf.convert_to_tensor(train_data_np, dtype=tf.float32)
+val_data = tf.convert_to_tensor(val_data_np, dtype=tf.float32)
+peak_positions_train = tf.convert_to_tensor(peak_positions_train_np, dtype=tf.float32)
+peak_positions_val = tf.convert_to_tensor(peak_positions_val_np, dtype=tf.float32)
 
-print(f"test_data shape: {test_data.shape}")
-print(f"val_data shape: {val_data.shape}")
-print(f"labels shape: {labels.shape}")
+# Set input dimension (using train_data shape)
+input_dim = train_data.shape[1]
+num_iterations = 20  # number of unrolled ISTA iterations
+ista_rnn_model = ISTA_RNN(input_dim, num_iterations=num_iterations)
 
-# Instantiate the model
-ista_rnn_model = ISTA_RNN(hidden_size, dropout_rate)
+# Optimizer and loss setup.
+optimizer = optimizers.Adam(learning_rate=1e-4)
+# Use two losses: one for reconstruction and one for peak prediction.
+# Increase the weight on the peak loss to focus training on peak prediction.
+loss_weight_recon = 0.5
+loss_weight_peak = 1.0
+custom_loss_fn = CustomLoss(0.01)
 
-# Compile the model
-ista_rnn_model.compile(optimizer=optimizers.Adam(learning_rate), loss=CustomLoss(lambda_value))
+# Prepare datasets.
+train_dataset = tf.data.Dataset.from_tensor_slices((train_data, {'reconstruction': train_data,
+                                                                   'peak': peak_positions_train}))
+train_dataset = train_dataset.shuffle(buffer_size=1024).batch(32)
 
-# Define early stopping and learning rate scheduler
-early_stopping = EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True)
-lr_scheduler = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-5)
+val_dataset = tf.data.Dataset.from_tensor_slices((val_data, {'reconstruction': val_data,
+                                                             'peak': peak_positions_val}))
+val_dataset = val_dataset.batch(32)
 
-# Train the model on the data
-max_indices = np.argmax(val_data, axis=2)
-labels_2 = tf.convert_to_tensor(max_indices, dtype=tf.float32)
-X_val = val_data
-Y_val = labels_2
-history = ista_rnn_model.fit(test_data, max_indices.T, batch_size=batch_size, epochs=num_epochs, validation_data=(X_val, Y_val), callbacks=[early_stopping, lr_scheduler])
+train_loss_history = []
+val_loss_history = []
+train_peak_acc_history = []
+val_peak_acc_history = []
 
-# Print the history
-print(history.history.keys())
+epochs = 1000
+for epoch in range(epochs):
+    print(f"Epoch {epoch+1}/{epochs}")
+    epoch_loss_avg = tf.keras.metrics.Mean()
+    epoch_peak_acc_avg = tf.keras.metrics.Mean()
+    
+    # Training loop
+    for x_batch, y_batch in train_dataset:
+        with tf.GradientTape() as tape:
+            predictions = ista_rnn_model(x_batch, training=True)
+            # Compute individual losses
+            loss_recon = tf.reduce_mean(tf.square(y_batch['reconstruction'] - predictions['reconstruction']))
+            loss_peak = tf.reduce_mean(tf.square(y_batch['peak'] - predictions['peak']))
+            loss_custom = custom_loss_fn(y_batch['reconstruction'], predictions['reconstruction'])
+            loss_value = loss_weight_recon * loss_recon + loss_weight_peak * loss_peak + loss_custom
+        gradients = tape.gradient(loss_value, ista_rnn_model.trainable_variables)
+        optimizer.apply_gradients(zip(gradients, ista_rnn_model.trainable_variables))
+        epoch_loss_avg.update_state(loss_value)
+        
+        # Update peak accuracy metric for this batch
+        batch_peak_acc = peak_accuracy(y_batch['peak'], predictions['peak'])
+        epoch_peak_acc_avg.update_state(batch_peak_acc)
+    
+    train_loss = epoch_loss_avg.result()
+    train_peak_acc = epoch_peak_acc_avg.result()
+    train_loss_history.append(train_loss)
+    train_peak_acc_history.append(train_peak_acc)
+    
+    # Validation loop
+    val_epoch_loss_avg = tf.keras.metrics.Mean()
+    val_epoch_peak_acc_avg = tf.keras.metrics.Mean()
+    for x_batch_val, y_batch_val in val_dataset:
+        predictions_val = ista_rnn_model(x_batch_val, training=False)
+        loss_recon_val = tf.reduce_mean(tf.square(y_batch_val['reconstruction'] - predictions_val['reconstruction']))
+        loss_peak_val = tf.reduce_mean(tf.square(y_batch_val['peak'] - predictions_val['peak']))
+        loss_val = loss_weight_recon * loss_recon_val + loss_weight_peak * loss_peak_val + \
+                   custom_loss_fn(y_batch_val['reconstruction'], predictions_val['reconstruction'])
+        val_epoch_loss_avg.update_state(loss_val)
+        
+        batch_val_peak_acc = peak_accuracy(y_batch_val['peak'], predictions_val['peak'])
+        val_epoch_peak_acc_avg.update_state(batch_val_peak_acc)
+        
+    val_loss = val_epoch_loss_avg.result()
+    val_peak_acc = val_epoch_peak_acc_avg.result()
+    val_loss_history.append(val_loss)
+    val_peak_acc_history.append(val_peak_acc)
+    
+    print(f"Training Loss: {train_loss:.4f} - Training Peak Acc: {train_peak_acc:.4f} | " +
+          f"Validation Loss: {val_loss:.4f} - Validation Peak Acc: {val_peak_acc:.4f}")
 
-# Evaluate the model
-test_loss = ista_rnn_model.evaluate(val_data)
+# Prediction and Visualization of Peak Prediction
+predictions = ista_rnn_model(val_data, training=False)
+predicted_peaks = predictions['peak'].numpy().flatten()
+
+# Evaluate on validation data (final average loss)
+test_loss = np.mean(val_loss_history)
 print(f"Test Loss: {test_loss}")
 
-# Predict the recovered signal
-val_size = int(test_data.shape[2] * 0.33)
-#X_val = test_data[-val_size:]
-#Y_val = labels[-val_size:]
-predictions, _ = ista_rnn_model.predict(X_val)
-#predictions = np.squeeze(predictions)
-
-# Plot the original noisy THz signal and the recovered signal
-for i in range(val_data.shape[0]):
-    plt.plot(val_data[i, 0, :], label='THz Signal', alpha=0.7)
-    plt.scatter(predictions[i,0], 0, color='r', marker='x', s=100, label='Predicted Pulse Position')
-    plt.scatter(Y_val[i], 0, color='y', marker='o', s=100, label='True Pulse Position')
-    plt.legend()
-    plt.xlabel('Sample Index')
+# Plot the original signal and predicted peak for a few samples.
+x_axis = np.arange(train_data.shape[1])
+for i in range(min(val_data.shape[0], 5)):
+    plt.figure(figsize=(12, 8))
+    plt.plot(x_axis, val_data_np[i], color='blue', alpha=0.7, label='Original')
+    # Mark the ground-truth peak with a green circle
+    true_peak = int(np.round(peak_positions_val_np[i]))
+    plt.scatter(true_peak, val_data_np[i][true_peak], color='green', marker='o', s=100, label='True Peak')
+    # Mark the predicted peak with a red X
+    pred_peak = int(np.round(predicted_peaks[i]))
+    plt.scatter(pred_peak, val_data_np[i][pred_peak], color='red', marker='x', s=100, label='Predicted Peak')
+    plt.xlabel('Samples')
     plt.ylabel('Amplitude')
-    plt.title(f'Predicted Pulse position at {round(distances[i] * 1e2, 1)}cm')
-    plt.grid(True)
+    plt.title(f'Peak Prediction for Sample {i}')
+    plt.legend()
     plt.show()
 
-# Summarize training history for loss
+# Plot training history: Loss and Peak Accuracy
 plt.figure(figsize=(10, 6))
-plt.plot(history.history['loss'], label='Training Loss')
-plt.plot(history.history['val_loss'], label='Validation Loss')
-plt.title('Model Loss Over Epochs')
+plt.plot(train_loss_history, label='Training Loss')
+plt.plot(val_loss_history, label='Validation Loss')
+plt.title('Loss Over Epochs (Peak Prediction Focus)')
 plt.xlabel('Epoch')
 plt.ylabel('Loss')
 plt.legend()
 plt.grid(True)
 plt.show()
 
-# Confusion matrix and metrics
-predicted_classes = (predictions.flatten() > 0.5).astype(int)  # Threshold to get binary predictions
-cm = confusion_matrix(labels, predicted_classes)
-precision = precision_score(labels, predicted_classes, zero_division=0)
-recall = recall_score(labels, predicted_classes, zero_division=0)
-
-# Plot confusion matrix
-disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=["Present", "Absent"])
-disp.plot(cmap='Blues', values_format=".4%")
-plt.title(f"Precision={precision:.3f}, Recall={recall:.3f}")
+plt.figure(figsize=(10, 6))
+plt.plot(train_peak_acc_history, label='Training Peak Accuracy')
+plt.plot(val_peak_acc_history, label='Validation Peak Accuracy')
+plt.title('Peak Accuracy Over Epochs')
+plt.xlabel('Epoch')
+plt.ylabel('Accuracy')
+plt.legend()
+plt.grid(True)
 plt.show()
