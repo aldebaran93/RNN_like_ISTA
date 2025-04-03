@@ -6,6 +6,9 @@ import matplotlib.pyplot as plt
 from absorption_spectrum import *
 
 
+def standardize(data):
+    return (data - np.mean(data)) / np.std(data)
+
 class SoftThresholdLayer(layers.Layer):
     def __init__(self, threshold):
         super(SoftThresholdLayer, self).__init__()
@@ -92,6 +95,10 @@ for distance in distances_2:
 
 val_data = np.real(np.fft.irfft(np.fft.rfft(trace) * transfer_functions_val))
 
+#Normalisierung der Daten
+#test_data = standardize(test_data)
+#val_data = standardize(val_data)
+
 val_data = tf.convert_to_tensor(windowing(val_data), dtype=tf.float32)
 train_data = tf.convert_to_tensor(windowing(test_data), dtype=tf.float32)
 
@@ -153,6 +160,7 @@ plt.figure(figsize=(10, 6))
 plt.plot(history.history['loss'], label='Training Loss')
 plt.plot(history.history['val_loss'], label='Validation Loss')
 plt.title('Model Loss Over Epochs')
+plt.savefig(f"plots/loss_vs_val.png", dpi=300)
 plt.xlabel('Epoch')
 plt.ylabel('Loss')
 plt.legend()
