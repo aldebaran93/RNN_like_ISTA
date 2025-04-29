@@ -10,10 +10,20 @@ def standardize(data):
     return (data - np.mean(data)) / np.std(data)
 
 class SoftThresholdLayer(layers.Layer):
-    def __init__(self, threshold):
-        super(SoftThresholdLayer, self).__init__()
-        self.threshold = tf.constant(threshold, dtype=tf.float32)
-
+    def __init__(self, lambda_init=0.1):
+        super().__init__()
+        self.lambda_init = lambda_init  # λ parameter (trainable)
+    
+    def build(self, input_shape):
+        # Compute Lipschitz constant L from wavelet matrix
+        if hasattr(self, 'We'):
+            W = self.We.weights[0]
+            self.L = tf.linalg.norm(W, ord=2)**2  # Approximate L
+        else:
+            self.L = 1.0  # Initial placeholder
+        self.threshold = self.lambda_init / self.L  # θ = λ/L
+        self.threshold = tf.cast(self.threshold, tf.float32)
+        
     def call(self, inputs):
         return tf.sign(inputs) * tf.maximum(tf.abs(inputs) - self.threshold, 0.0)
     
@@ -32,14 +42,16 @@ class CustomLoss(tf.keras.losses.Loss):
 
 # ISTA-RNN Model Definition
 class ISTA_RNN(tf.keras.Model):
-    def __init__(self, input_dim, hidden_state=None, threshold=0.1):
+    def __init__(self, input_dim, hidden_state=None, initial_threshold=0.01):
         super(ISTA_RNN, self).__init__()
         self.We = layers.Dense(input_dim, use_bias=False)
         self.hidden = layers.Dense(input_dim, activation='relu')
-        self.dropout = layers.Dropout(0.5)
+        self.dropout = layers.Dropout(0.2)
         self.reconstruction = layers.Dense(input_dim)
         self.peak_output = layers.Dense(1, activation='relu')
-        self.soft_threshold = SoftThresholdLayer(threshold)  # the soft-thresholding
+        self.soft_threshold = SoftThresholdLayer(initial_threshold)  # the soft-thresholding
+        # Store hidden states for BPTT
+        self.hidden_states = []
 
     def call(self, inputs, hidden_state=None, training=False):
         batch_size = inputs.shape[1]
@@ -111,8 +123,8 @@ input_dim = tf.shape(train_data)[1]
 ista_rnn_model = ISTA_RNN(input_dim)
 ista_rnn_model.compile(
     optimizer='adam',
-    loss=CustomLoss(0.01),  #{'reconstruction': 'mse', 'peak': 'mse'},
-    loss_weights={'reconstruction': 1.0, 'peak': 0.01}
+    loss=CustomLoss(1),  #{'reconstruction': 'mse', 'peak': 'mse'},
+    loss_weights={'reconstruction': 0.01, 'peak': 1}
 )
 
 # Define early stopping and learning rate scheduler
