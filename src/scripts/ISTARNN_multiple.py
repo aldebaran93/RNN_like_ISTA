@@ -55,63 +55,55 @@ def windowing(data):
     return np.array(pulse_windows)
 
 def multi_pulse(val_data):
-    val_data_np = val_data  # (61, 3528)
-    seq_length = val_data_np.shape[1]
-    num_samples = val_data.shape[0]
-    pulse_length = 500  # Passe je nach Breite deines Pulses an
+    val_data_np = val_data.numpy() if isinstance(val_data, tf.Tensor) else val_data
+    num_traces = val_data_np.shape[0]
+    signal_length = val_data_np.shape[1]
     
-    combined_data = []
+    # Abstand zwischen Pulsen (z. B. von 1000 auf 200)
+    start_distance = 1000
+    min_distance = 0
+    distances = np.linspace(start_distance, min_distance, num_traces).astype(int)
+    
+    new_data = []
     peak_positions = []
-    used_pairs = set()
     
-    # Sichere Positionen für sichtbare Platzierung
-    positions = [(500, 2000), (700, 2200), (1000, 2300), (800, 2100)]
+    for i, d in enumerate(distances):
+        # Wähle zwei verschiedene Pulse
+        idx1, idx2 = np.random.choice(len(val_data_np), 2, replace=False)
+        pulse1 = val_data_np[idx1]
+        pulse2 = val_data_np[idx2]
     
-    while len(combined_data) < num_samples:
-        i, j = np.random.choice(len(val_data_np), size=2, replace=False)
+        # Berechne Einfügepositionen (mit Sicherheitsabstand zu Rändern)
+        pulse_len = 400  # Fester Ausschnitt – passe nach Bedarf an
+        center1 = signal_length // 2 - d // 2
+        center2 = center1 + d
     
-        if (i, j) in used_pairs or (j, i) in used_pairs:
+        if center1 - pulse_len//2 < 0 or center2 + pulse_len//2 > signal_length:
+            continue  # überspringen, wenn zu eng
+    
+        # Ausschneiden (z.B. 400 Samples rund um das Peak-Zentrum)
+        mid1 = np.argmax(pulse1)
+        mid2 = np.argmax(pulse2)
+    
+        segment1 = pulse1[mid1 - pulse_len//2 : mid1 + pulse_len//2]
+        segment2 = pulse2[mid2 - pulse_len//2 : mid2 + pulse_len//2]
+    
+        if len(segment1) != pulse_len or len(segment2) != pulse_len:
             continue
     
-        pulse1 = val_data_np[i]
-        pulse2 = val_data_np[j]
+        # Neues leeres Signal
+        combined = np.zeros(signal_length)
+        combined[center1 - pulse_len//2 : center1 + pulse_len//2] += segment1
+        combined[center2 - pulse_len//2 : center2 + pulse_len//2] += segment2
     
-        mid1 = np.argmax(np.abs(pulse1))
-        mid2 = np.argmax(np.abs(pulse2))
+        # Neue Peaks
+        peak_positions.append([center1, center2])
+        new_data.append(combined)
     
-        start1 = mid1 - pulse_length // 2
-        end1 = mid1 + pulse_length // 2
-        start2 = mid2 - pulse_length // 2
-        end2 = mid2 + pulse_length // 2
-    
-        # Sicherstellen, dass alles innerhalb des gültigen Bereichs ist
-        if start1 < 0 or end1 > seq_length or start2 < 0 or end2 > seq_length:
-            continue
-    
-        pulse1_win = pulse1[start1:end1]
-        pulse2_win = pulse2[start2:end2]
-    
-        if pulse1_win.shape[0] != pulse_length or pulse2_win.shape[0] != pulse_length:
-            continue
-    
-        signal = np.zeros(seq_length)
-        pos1, pos2 = positions[np.random.randint(len(positions))]
-    
-        # Prüfen, ob die Positionen innerhalb der Sequenz bleiben
-        if pos1 + pulse_length > seq_length or pos2 + pulse_length > seq_length:
-            continue
-    
-        signal[pos1:pos1 + pulse_length] += pulse1_win
-        signal[pos2:pos2 + pulse_length] += pulse2_win
-    
-        combined_data.append(signal)
-        used_pairs.add((i, j))
-        peak_positions.append([pos1 + np.argmax(np.abs(pulse1_win)),
-                                   pos2 + np.argmax(np.abs(pulse2_win))])
+    # In Arrays konvertieren
+    new_data = np.array(new_data)
     peak_positions = np.array(peak_positions)
-    # Finaler Tensor mit 30 Sequenzen
-    val_data_mixed = tf.convert_to_tensor(np.stack(combined_data), dtype=tf.float32)
-    return val_data_mixed, peak_positions
+    return new_data, peak_positions
 
 # =============== 2. Modell ===============
 class RNNLikeISTA(tf.keras.Model):
@@ -168,7 +160,7 @@ train_data = tf.convert_to_tensor(windowing(test_data), dtype=tf.float32)
 train_data, peak_positions_train = multi_pulse(train_data)
 val_data = tf.convert_to_tensor(windowing(val_data_varied), dtype=tf.float32)
 val_data_multi, peak_positions_val = multi_pulse(val_data)
-val_data = awgn(val_data_multi, snr_db=5)
+val_data = val_data_multi #awgn(val_data_multi, snr_db=5)
 
 peak_positions_train = tf.convert_to_tensor(peak_positions_train, dtype=tf.float32)
 peak_positions_val = tf.convert_to_tensor(peak_positions_val, dtype=tf.float32)
@@ -181,7 +173,7 @@ thz_pulse_init = get_trace_slice(t_vector, trace, 98e-12, 105e-12)
 thz_pulse_init = np.real(thz_pulse_init).astype(np.float32)
 
 model = RNNLikeISTA(
-    thz_pulse_init=thz_pulse_init + awgn(thz_pulse_init, snr_db=5),
+    thz_pulse_init=thz_pulse_init, #+ awgn(thz_pulse_init, snr_db=5),
     lam=1e-3,
     num_iterations=10,
     signal_length=3528
