@@ -29,6 +29,23 @@ freq_vector = np.fft.rfftfreq(count_of_timepoints, dt)
 t_vector = np.arange(count_of_timepoints)*dt
 w_vector = 2*np.pi*freq_vector
 
+def antenna_gain(f_GHz):
+    """Berechnet den frequenzabhängigen Antennengewinn in dBi."""
+    return np.where(
+        f_GHz >= 400,
+        14.4,
+        np.where(
+            f_GHz >= 50,
+            14.4 * (f_GHz - 50) / 350,
+            0
+        )
+    )
+
+def fspl_dB(distance, f_Hz):
+    """Berechnet den Freistrahlverlust in dB."""
+    with np.errstate(divide='ignore'):
+        return 20 * np.log10(distance) + 20 * np.log10(f_Hz) - 147.55
+
 def dgmm(timeaxis, t0, mu1, mu2, sigma1, sigma2, a1, a2):
     """
     Generates double gaussian distribution with the given parameters
@@ -42,6 +59,44 @@ def dgmm(timeaxis, t0, mu1, mu2, sigma1, sigma2, a1, a2):
     mu2 = mu2-average_position+t0
 
     return a1*np.exp(-((timeaxis-mu1)**2)/(2*sigma1**2))+a2*np.exp(-((timeaxis-mu2)**2)/(2*sigma2**2))
+
+def calc_transfer_Function(distances):
+    """
+    Compute transfer function for differents distance + absorption + free space path loss
+    """
+    transfer_functions = []
+    for distance in distances:
+        # Berechnung der Transferfunktion mit Absorption
+        transfer_function = np.exp(distance * 1j * complex_refractive_index * w_vector / speed_of_light) * \
+                            np.exp(distance * 1j * 1.0027 * w_vector / speed_of_light)
+        
+        # Frequenzabhängige Verluste hinzufügen
+        f_GHz = freq_vector / 1e9  # Frequenz in GHz für Antennengewinn
+        f_Hz = freq_vector         # Frequenz in Hz für FSPL
+        
+        # Antennengewinn für Sender und Empfänger (gleiche Antennen)
+        G_tx = antenna_gain(f_GHz)
+        G_rx = G_tx
+        
+        # Freistrahlverlust berechnen
+        fspl_loss = fspl_dB(distance, f_Hz)
+        fspl_loss = np.nan_to_num(fspl_loss, nan=0, neginf=0, posinf=0)  # Handle log(0)
+        
+        # Gesamtverlust in dB umrechnen (FSPL - Gewinn)
+        total_loss_dB = fspl_loss - (G_tx + G_rx)
+        
+        # Umrechnung in linearen Faktor (Spannung)
+        linear_factor = 10 ** (-total_loss_dB / 20)
+        
+        # Anwenden auf die Transferfunktion
+        transfer_function *= linear_factor
+        
+        # Weiter wie bisher (Rauschen, Phasenkorrektur)
+        #transfer_function_noisy = np.random.normal(size=transfer_function.size) * 0.001 + transfer_function
+        transfer_function = np.abs(transfer_function) * np.exp(-1j * np.angle(transfer_function))
+        
+        transfer_functions.append(transfer_function)
+    return transfer_functions
 
 # Start frequency and stop frequency where the spectrum should be calculated in
 start_frequency = freq_vector[0]
@@ -151,19 +206,11 @@ complex_refractive_index = refractive_index + 1j*exctinction_coeffs
 # Define distance range
 distances = np.arange(0.3, 0.329 + 0.001, 0.001)  # 30 cm to 60 cm, step 1 mm
 
-# Placeholder to store transfer functions for each distance
-transfer_functions = []
-
-for distance in distances:
-    # Compute transfer function for the current distance
-    transfer_function = np.exp(distance * 1j * complex_refractive_index * w_vector / speed_of_light) * \
-                        np.exp(distance * 1j * 1.0027 * w_vector / speed_of_light)
-    transfer_function_noisy = np.random.normal(size=transfer_function.size) * 0.001 + transfer_function
-    transfer_function = np.abs(transfer_function) * np.exp(-1j * np.angle(transfer_function))
-    transfer_functions.append(transfer_function)
-
+# Berechnung der Transferfunktion mit Absorption
+transfer_functions = calc_transfer_Function(distances)
+# Plot Attenuation for the current distance
+for i, distance in enumerate(distances):
     if plot==0:
-        # Plot Attenuation for the current distance
         transfer_function_1m = np.exp(distance * 1j * complex_refractive_index * w_vector / speed_of_light) * \
                                np.exp(-distance * 1j * 1.0027 * w_vector / speed_of_light)
         transfer_function_1m = np.abs(transfer_function_1m) * np.exp(-1j * np.angle(transfer_function_1m))
@@ -180,7 +227,7 @@ for distance in distances:
         plt.xlim([0, 2500])
         plt.grid()
         plt.legend()
-
+    
         # Plot Phase for the current distance
         plt.figure()
         plt.plot(freq_vector * 1e-9, np.unwrap(np.angle(transfer_function_1m)), label=f"Transfer Function {distance * 100:.1f} cm")
@@ -189,7 +236,7 @@ for distance in distances:
         plt.ylabel("Phase (rad)")
         plt.xlabel("Frequency (THz)")
         plt.legend()
-
+        
         # Impulse Response
         td_1m = np.fft.irfft(transfer_function_1m)
         td_1m = np.roll(td_1m, int(td_1m.size / 2))
@@ -206,7 +253,7 @@ for distance in distances:
         window[start_idx:end_idx] = tukey_window
         window[maxpos - 200:maxpos + 2200] = tukey(2200 + 200, 0.05)
         tdwindowd_1m = td_1m * window
-
+    
         # Plot Impulse Response
         plt.figure()
         plt.plot(t_vector * 1e12, np.real(td_1m), label="Unwindowed")
@@ -217,7 +264,7 @@ for distance in distances:
         plt.legend()
         plt.grid()
         plt.xlim(490, 700)
-
+    
         # Magnitude of Impulse Response
         plt.figure()
         plt.plot(t_vector * 1e12, 20 * np.log10(np.abs(np.real(td_1m))), label="Unwindowed")
@@ -226,11 +273,11 @@ for distance in distances:
         plt.ylabel("Magnitude")
         plt.legend()
         plt.grid()
-
+    
         # Frequency Response
         plt.figure()
-        plt.plot(freq_vector * 1e-9, 20 * np.log10(np.abs(np.fft.rfft(np.real(td_1m)))), label="Unwindowed")
-        plt.plot(freq_vector * 1e-9, 20 * np.log10(np.abs(np.fft.rfft(np.real(tdwindowd_1m)))), label="Windowed")
+        plt.plot(freq_vector * 1e-9, 20 * np.log10(np.abs(np.fft.rfft(np.real(td_1m)))))#, label="Unwindowed")
+        #plt.plot(freq_vector * 1e-9, 20 * np.log10(np.abs(np.fft.rfft(np.real(tdwindowd_1m)))), label="Windowed")
         plt.xlabel("Frequency (GHz)")
         plt.ylabel("Magnitude")
         plt.legend()
@@ -254,7 +301,7 @@ for i, distance in enumerate(distances):
         plt.plot(t_vector*1e12, np.real(np.fft.irfft(np.fft.rfft(trace)*transfer_functions[i])), label="TF Calculated")
         plt.ylabel("Amplitude (a.u.)")
         plt.xlabel("Delay Time (ps)")
-        plt.xlim(98, 115)
+        plt.xlim(98, 118)
         plt.legend()
         plt.grid()
 

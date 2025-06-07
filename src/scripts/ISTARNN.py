@@ -6,13 +6,7 @@ from absorption_spectrum import *
 
 # =============== 0. Fixes & Initialisierung ===============
 # THz-Trace
-transfer_functions = []
-distances = np.arange(0.3, 0.329 + 0.001, 500e-6)  # 30 cm to 33 cm, step 0.5 mm
-for distance in distances:
-    tfct = np.exp(distance * 1j * complex_refractive_index * w_vector / speed_of_light) * \
-           np.exp(distance * 1j * 1.0027 * w_vector / speed_of_light)
-    tfct = np.abs(tfct) * np.exp(-1j * np.angle(tfct))
-    transfer_functions.append(tfct)
+transfer_functions = calc_transfer_Function(distances)
 transfer_functions = np.array(transfer_functions)
 
 # =============== 1. Funktionen ===============
@@ -37,9 +31,7 @@ def get_trace_slice(t_vector, trace, t_min, t_max):
 def soft_threshold(x, theta):
     return tf.sign(x) * tf.maximum(tf.abs(x) - theta, 0.0)
 
-def windowing(data):
-    window_size = 3528
-    threshold = 1
+def adaptive_windowing(data, window_size=3528, threshold=5e-3):
     pulse_windows, pulse_positions = [], []
 
     for seq in data:
@@ -52,7 +44,7 @@ def windowing(data):
         else:
             pulse_windows.append(np.zeros(window_size))
             pulse_positions.append(None)
-    return np.array(pulse_windows)
+    return np.array(pulse_windows), pulse_positions
 
 # =============== 2. Modell ===============
 class RNNLikeISTA(tf.keras.Model):
@@ -91,21 +83,18 @@ class RNNLikeISTA(tf.keras.Model):
 
 # =============== 3. Trainings- und Validierungsdaten ===============
 test_data = np.real(np.fft.irfft(np.fft.rfft(trace) * transfer_functions))
-#test_data_noisy = awgn(test_data, snr_db=5)
+pulse_windows, pulse_positions = adaptive_windowing(test_data)
+train_data = tf.convert_to_tensor(pulse_windows, dtype=tf.float32)
+train_data = train_data / np.max(np.abs(train_data), axis=1, keepdims=True)
 
 # Validierung
-transfer_functions_val = []
 distances_2 = np.arange(0.3, 0.329 + 0.001, 500e-6)
-for distance in distances_2:
-    tfct_val = np.exp(distance * 1j * complex_refractive_index * w_vector / speed_of_light) * \
-               np.exp(distance * 1j * 1.0027 * w_vector / speed_of_light)
-    tfct_val = np.abs(tfct_val) * np.exp(-1j * np.angle(tfct_val))
-    transfer_functions_val.append(tfct_val)
+transfer_functions_val = calc_transfer_Function(distances_2)
 val_data = np.real(np.fft.irfft(np.fft.rfft(trace) * transfer_functions_val))
-val_data_noisy = awgn(val_data, snr_db=5)
-
-train_data = tf.convert_to_tensor(windowing(test_data), dtype=tf.float32)
-val_data = tf.convert_to_tensor(windowing(val_data_noisy), dtype=tf.float32)
+pulse_windows, pulse_positions_val = adaptive_windowing(val_data)
+val_data = tf.convert_to_tensor(pulse_windows, dtype=tf.float32)
+#val_data = awgn(val_data, snr_db=20)
+val_data = val_data / np.max(np.abs(val_data), axis=1, keepdims=True)
 
 peak_positions_train = tf.convert_to_tensor(np.argmax(train_data, axis=1), dtype=tf.float32)
 peak_positions_val = tf.convert_to_tensor(np.argmax(val_data, axis=1), dtype=tf.float32)
@@ -118,13 +107,13 @@ thz_pulse_init = get_trace_slice(t_vector, trace, 98e-12, 105e-12)
 thz_pulse_init = np.real(thz_pulse_init).astype(np.float32)
 
 model = RNNLikeISTA(
-    thz_pulse_init=thz_pulse_init + awgn(thz_pulse_init, snr_db=5),
+    thz_pulse_init=thz_pulse_init, #+ awgn(thz_pulse_init, snr_db=20),
     lam=1e-3,
     num_iterations=10,
     signal_length=3528
 )
 
-optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
+optimizer = tf.keras.optimizers.Adam(learning_rate=0.001, clipnorm=1.0)
 
 # =============== 5. Training ===============
 loss_history, val_loss_history = [], []
@@ -151,9 +140,9 @@ for epoch in range(epochs):
     loss_history.append(avg_loss)
 
     val_x_pred, val_peak_pred = model(val_data)
-    val_loss_recon = tf.reduce_mean(tf.square(val_x_pred - val_data))
+    #val_loss_recon = tf.reduce_mean(tf.square(val_x_pred - val_data))
     val_loss_peak = tf.reduce_mean(tf.square(val_peak_pred - peak_positions_val))
-    val_total_loss = val_loss_recon + 0.001 * val_loss_peak
+    val_total_loss = val_loss_peak
     val_loss_history.append(val_total_loss.numpy())
 
     print(f"Epoch {epoch+1}/{epochs} - Train Loss: {avg_loss:.6f}, Val Loss: {val_total_loss:.6f}")
@@ -178,7 +167,7 @@ os.makedirs("plots", exist_ok=True)
 
 for idx in range(val_data.shape[0]):
     plt.figure(figsize=(10,5))
-    plt.plot(val_data[idx].numpy(), label='Original Window', linestyle='--')
+    plt.plot(val_data[idx], label='Original Window', linestyle='--')
     plt.axvline(predicted_peaks[idx], color='red', linestyle='--', label='Predicted Peak')
     plt.legend()
     plt.grid()
