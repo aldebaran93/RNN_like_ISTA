@@ -113,6 +113,9 @@ train_data = train_data * amplitudes
 
 val_data = tf.convert_to_tensor(windowing(val_data_noisy), dtype=tf.float32)
 
+num_samples = tf.shape(val_data)[0]
+val_data = val_data * amplitudes
+
 peak_positions_train = tf.convert_to_tensor(np.argmax(train_data, axis=1), dtype=tf.float32)
 peak_positions_val = tf.convert_to_tensor(np.argmax(val_data, axis=1), dtype=tf.float32)
 
