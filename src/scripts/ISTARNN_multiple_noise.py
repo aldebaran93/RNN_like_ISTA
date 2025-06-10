@@ -160,7 +160,7 @@ train_data = tf.convert_to_tensor(windowing(test_data), dtype=tf.float32)
 train_data, peak_positions_train = multi_pulse(train_data)
 val_data = tf.convert_to_tensor(windowing(val_data_varied), dtype=tf.float32)
 val_data_multi, peak_positions_val = multi_pulse(val_data)
-val_data = val_data_multi #awgn(val_data_multi, snr_db=5)
+val_data = awgn(val_data_multi, snr_db=5)
 
 peak_positions_train = tf.convert_to_tensor(peak_positions_train, dtype=tf.float32)
 peak_positions_val = tf.convert_to_tensor(peak_positions_val, dtype=tf.float32)
@@ -173,7 +173,7 @@ thz_pulse_init = get_trace_slice(t_vector, trace, 98e-12, 105e-12)
 thz_pulse_init = np.real(thz_pulse_init).astype(np.float32)
 
 model = RNNLikeISTA(
-    thz_pulse_init=thz_pulse_init, #+ awgn(thz_pulse_init, snr_db=5),
+    thz_pulse_init=thz_pulse_init + awgn(thz_pulse_init, snr_db=5),
     lam=1e-3,
     num_iterations=10,
     signal_length=3528
