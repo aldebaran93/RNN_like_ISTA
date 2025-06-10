@@ -91,7 +91,7 @@ class RNNLikeISTA(tf.keras.Model):
 
 # =============== 3. Trainings- und Validierungsdaten ===============
 test_data = np.real(np.fft.irfft(np.fft.rfft(trace) * transfer_functions))
-#test_data_noisy = awgn(test_data, snr_db=5)
+#test_data = awgn(test_data, snr_db=10)
 
 # Validierung
 transfer_functions_val = []
@@ -105,6 +105,12 @@ val_data = np.real(np.fft.irfft(np.fft.rfft(trace) * transfer_functions_val))
 val_data_noisy = awgn(val_data, snr_db=5)
 
 train_data = tf.convert_to_tensor(windowing(test_data), dtype=tf.float32)
+# Get shape
+num_samples = tf.shape(train_data)[0]
+amplitudes = tf.random.uniform(shape=(num_samples, 1), minval=1, maxval=11, dtype=tf.int32)
+amplitudes = tf.cast(amplitudes, tf.float32)
+train_data = train_data * amplitudes
+
 val_data = tf.convert_to_tensor(windowing(val_data_noisy), dtype=tf.float32)
 
 peak_positions_train = tf.convert_to_tensor(np.argmax(train_data, axis=1), dtype=tf.float32)
