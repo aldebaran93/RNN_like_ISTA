@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import os
 import tensorflow as tf
 from absorption_spectrum import *
+from dataset import *
 
 def awgn(signals, snr_db):
     signals = np.asarray(signals, dtype=np.float32)
@@ -118,11 +119,11 @@ val_data = windowing(val_data_varied)
 val_data = awgn(val_data, snr_db=5)
 
 #peak_positions_train = np.argmax(train_data, axis=1)
-peak_positions_val = np.argmax(val_data, axis=1)
-detection_rates, predicted_peaks = matched_filter(val_data, train_data, peak_positions_val)
+peak_positions_val = np.argmax(val_dataset, axis=1)
+detection_rates, predicted_peaks = matched_filter(val_dataset, train_dataset, peak_positions_val)
 
 ############# Evaluation after computing #####################
-evaluate_peak_detection(predicted_peaks, peak_positions_val, val_data)
+result = evaluate_peak_detection(predicted_peaks, peak_positions_val, val_data)
 
 # Plot Detection Rate vs SNR
 os.makedirs("plots", exist_ok=True)

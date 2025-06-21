@@ -141,7 +141,7 @@ val_data = awgn(val_data[0], snr_db=-5)
 ############# Evaluation after computing #####################
 os.makedirs("plots", exist_ok=True)
 for i in range(val_data.shape[0]):
-    y = val_data[i]
+    y = val_dataset[i]
     sparse_x, pulse_positions = sparse_deconvolution(y, thz_pulse_init)
     plt.figure(figsize=(12, 4))
     plt.plot(y, label='THz signal')

@@ -1,32 +1,15 @@
 import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plt
+from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix
 import os
+import seaborn as sns
 from absorption_spectrum import *
+from dataset import *
 
 # =============== 0. Fixes & Initialisierung ===============
-# THz-Trace
-transfer_functions = []
-distances = np.arange(0.3, 0.329 + 0.001, 500e-6)  # 30 cm to 33 cm, step 0.5 mm
-for distance in distances:
-    tfct = np.exp(distance * 1j * complex_refractive_index * w_vector / speed_of_light) * \
-           np.exp(distance * 1j * 1.0027 * w_vector / speed_of_light)
-    tfct = np.abs(tfct) * np.exp(-1j * np.angle(tfct))
-    transfer_functions.append(tfct)
-transfer_functions = np.array(transfer_functions)
 
 # =============== 1. Funktionen ===============
-def awgn(signals, snr_db):
-    signals = np.asarray(signals, dtype=np.float32)
-    noisy_signals = np.empty_like(signals)
-    for i in range(signals.shape[0]):
-        signal = signals[i]
-        signal_power = np.mean(signal ** 2)
-        snr_linear = 10 ** (snr_db / 10.0)
-        noise_power = signal_power / snr_linear
-        noise = np.random.normal(0, np.sqrt(noise_power), size=signal.shape)
-        noisy_signals[i] = signal + noise
-    return noisy_signals
 
 def get_trace_slice(t_vector, trace, t_min, t_max):
     trace = dgmm(t_vector, 100e-12, -670.81e-12, -670.39e-12, 0.19, 0.24, -5.43, 3.82)
@@ -36,23 +19,6 @@ def get_trace_slice(t_vector, trace, t_min, t_max):
 
 def soft_threshold(x, theta):
     return tf.sign(x) * tf.maximum(tf.abs(x) - theta, 0.0)
-
-def windowing(data):
-    window_size = 3528
-    threshold = 1
-    pulse_windows, pulse_positions = [], []
-
-    for seq in data:
-        for i in range(2000, len(seq) - window_size + 1, window_size):
-            window = seq[i:i + window_size]
-            if np.max(window) > threshold:
-                pulse_windows.append(window)
-                pulse_positions.append(i)
-                break
-        else:
-            pulse_windows.append(np.zeros(window_size))
-            pulse_positions.append(None)
-    return np.array(pulse_windows)
 
 # =============== 2. Modell ===============
 class RNNLikeISTA(tf.keras.Model):
@@ -89,35 +55,71 @@ class RNNLikeISTA(tf.keras.Model):
         peak_pred = tf.squeeze(peak_pred, axis=-1) * self.signal_length
         return x, peak_pred
 
+def metric(predicted_peaks, peak_positions_val):
+    predicted_peaks = np.array(predicted_peaks)
+    true_peaks = np.array(peak_positions_val)
+    
+    y_true = []
+    y_pred = []
+    
+    # Track matched ground-truth peaks
+    matched_true = set()
+    
+    # Evaluate predicted peaks
+    for pred in predicted_peaks:
+        match_found = False
+        for i, true in enumerate(true_peaks):
+            if i not in matched_true and abs(pred - true) <= 50:
+                # Match found within ±50 samples
+                match_found = True
+                matched_true.add(i)
+                break
+        if match_found:
+            y_true.append(1)  # There was a real peak
+            y_pred.append(1)  # And we detected it
+        else:
+            y_true.append(0)  # No real peak matched
+            y_pred.append(1)  # But we predicted one = False Positive
+    
+    # Now add False Negatives: ground-truth peaks with no matching prediction
+    for i in range(len(true_peaks)):
+        if i not in matched_true:
+            y_true.append(1)  # Real peak
+            y_pred.append(0)  # But missed = False Negative
+    
+    # Metrics
+    precision = precision_score(y_true, y_pred)
+    recall = recall_score(y_true, y_pred)
+    f1 = f1_score(y_true, y_pred)
+    a = print(f"Precision: {precision:.4f}, Recall: {recall:.4f}, F1 Score: {f1:.4f}")
+    return y_pred, y_true, a
+
+def confusion_matrice(y_pred, y_true):
+
+    # Get raw confusion matrix
+    cm = confusion_matrix(y_true, y_pred)
+    
+    # Convert to percentages
+    cm_percent = cm / np.sum(cm) * 100
+    
+    # Create annotated labels
+    labels = np.array([["{0:.4f}%".format(val) for val in row] for row in cm_percent])
+    
+    # Plotting
+    plt.figure(figsize=(6, 5))
+    sns.heatmap(cm_percent, annot=labels, fmt='', cmap='Blues', cbar=True,
+                xticklabels=["Present", "Absent"],
+                yticklabels=["Present", "Absent"])
+    
+    plt.xlabel("Predicted label")
+    plt.ylabel("True label")
+    plt.title("(a)", loc='center', fontsize=12)
+    plt.tight_layout()
+    plt.show()
 # =============== 3. Trainings- und Validierungsdaten ===============
-test_data = np.real(np.fft.irfft(np.fft.rfft(trace) * transfer_functions))
-#test_data = awgn(test_data, snr_db=10)
 
-# Validierung
-transfer_functions_val = []
-distances_2 = np.arange(0.3, 0.329 + 0.001, 500e-6)
-for distance in distances_2:
-    tfct_val = np.exp(distance * 1j * complex_refractive_index * w_vector / speed_of_light) * \
-               np.exp(distance * 1j * 1.0027 * w_vector / speed_of_light)
-    tfct_val = np.abs(tfct_val) * np.exp(-1j * np.angle(tfct_val))
-    transfer_functions_val.append(tfct_val)
-val_data = np.real(np.fft.irfft(np.fft.rfft(trace) * transfer_functions_val))
-val_data_noisy = awgn(val_data, snr_db=5)
-
-train_data = tf.convert_to_tensor(windowing(test_data), dtype=tf.float32)
-# Get shape
-num_samples = tf.shape(train_data)[0]
-amplitudes = tf.random.uniform(shape=(num_samples, 1), minval=1, maxval=11, dtype=tf.int32)
-amplitudes = tf.cast(amplitudes, tf.float32)
-train_data = train_data * amplitudes
-
-val_data = tf.convert_to_tensor(windowing(val_data_noisy), dtype=tf.float32)
-
-num_samples = tf.shape(val_data)[0]
-val_data = val_data * amplitudes
-
-peak_positions_train = tf.convert_to_tensor(np.argmax(train_data, axis=1), dtype=tf.float32)
-peak_positions_val = tf.convert_to_tensor(np.argmax(val_data, axis=1), dtype=tf.float32)
+peak_positions_train = tf.convert_to_tensor(np.argmax(train_dataset, axis=1), dtype=tf.float32)
+peak_positions_val = tf.convert_to_tensor(np.argmax(val_dataset, axis=1), dtype=tf.float32)
 
 # =============== 4. Modell Setup ===============
 np.random.seed(42)
@@ -127,7 +129,7 @@ thz_pulse_init = get_trace_slice(t_vector, trace, 98e-12, 105e-12)
 thz_pulse_init = np.real(thz_pulse_init).astype(np.float32)
 
 model = RNNLikeISTA(
-    thz_pulse_init=thz_pulse_init + awgn(thz_pulse_init, snr_db=5),
+    thz_pulse_init=thz_pulse_init + awgn(thz_pulse_init, snr_db=30),
     lam=1e-3,
     num_iterations=10,
     signal_length=3528
@@ -137,15 +139,15 @@ optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
 
 # =============== 5. Training ===============
 loss_history, val_loss_history = [], []
-epochs, batch_size = 50, 32
+epochs, batch_size = 50, 16
 
 for epoch in range(epochs):
-    idx = tf.random.shuffle(tf.range(tf.shape(train_data)[0]))
-    train_data_shuffled = tf.gather(train_data, idx)
+    idx = tf.random.shuffle(tf.range(tf.shape(train_dataset)[0]))
+    train_data_shuffled = tf.gather(train_dataset, idx)
     peak_train_shuffled = tf.gather(peak_positions_train, idx)
     epoch_loss = 0.0
 
-    for i in range(0, train_data.shape[0], batch_size):
+    for i in range(0, train_dataset.shape[0], batch_size):
         y_batch = train_data_shuffled[i:i+batch_size]
         peak_batch = peak_train_shuffled[i:i+batch_size]
         with tf.GradientTape() as tape:
@@ -156,11 +158,11 @@ for epoch in range(epochs):
         optimizer.apply_gradients(zip(grads, model.trainable_variables))
         epoch_loss += total_loss.numpy()
 
-    avg_loss = epoch_loss / (train_data.shape[0] // batch_size)
+    avg_loss = epoch_loss / (train_dataset.shape[0] // batch_size)
     loss_history.append(avg_loss)
 
-    val_x_pred, val_peak_pred = model(val_data)
-    val_loss_recon = tf.reduce_mean(tf.square(val_x_pred - val_data))
+    val_x_pred, val_peak_pred = model(val_dataset)
+    val_loss_recon = tf.reduce_mean(tf.square(val_x_pred - val_dataset))
     val_loss_peak = tf.reduce_mean(tf.square(val_peak_pred - peak_positions_val))
     val_total_loss = val_loss_recon + 0.001 * val_loss_peak
     val_loss_history.append(val_total_loss.numpy())
@@ -179,15 +181,15 @@ plt.grid()
 plt.show()
 
 # =============== 7. Vorhersage und Visualisierung ===============
-reconstructed_pulses, predicted_peaks = model(val_data)
+reconstructed_pulses, predicted_peaks = model(val_dataset)
 reconstructed_pulses = reconstructed_pulses.numpy()
 predicted_peaks = predicted_peaks.numpy()
 
 os.makedirs("plots", exist_ok=True)
 
-for idx in range(val_data.shape[0]):
+for idx in range(val_dataset.shape[0]):
     plt.figure(figsize=(10,5))
-    plt.plot(val_data[idx].numpy(), label='Original Window', linestyle='--')
+    plt.plot(val_dataset[idx], label='Original Window', linestyle='--')
     plt.axvline(predicted_peaks[idx], color='red', linestyle='--', label='Predicted Peak')
     plt.legend()
     plt.grid()
@@ -216,3 +218,6 @@ accuracy_within_tolerance = correct_within_tolerance / total
 print(f"Peaks innerhalb ±{tolerance} Samples korrekt: {correct_within_tolerance} von {total}")
 print(f"Trefferquote innerhalb ±{tolerance} Samples: {accuracy_within_tolerance * 100:.2f}%")
 print("===============================================")
+
+y_pred, y_true, a = metric(predicted_peaks, peak_positions_val)
+confusion_matrice(y_pred, y_true)
