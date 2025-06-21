@@ -9,6 +9,7 @@ import numpy as np
 from absorption_spectrum import *
 from sklearn.utils import shuffle
 import tensorflow as tf
+import scipy
 
 def get_trace_slice(t_vector, trace, t_min, t_max):
     trace = dgmm(t_vector, 100e-12, -670.81e-12, -670.39e-12, 0.19, 0.24, -5.43, 3.82)
@@ -113,8 +114,18 @@ def multi_pulse(val_data):
     new_data = np.array(new_data)
     peak_positions = np.array(peak_positions)
     return new_data, peak_positions
-# Training data
 
+def extract_data():
+    mat_data = scipy.io.loadmat("noTXVoltage.mat")
+    firstchannel = mat_data['firstchannel'].squeeze()  # ensure 1D array
+    mean_value = np.mean(firstchannel)
+    std_value = np.std(firstchannel)
+    print("Mean value is: ", mean_value)
+    print("Standard deviation value is: ", std_value)
+    return firstchannel, mean_value, std_value
+    
+# Training data
+test_data, mean_value, std_value = extract_data()
 transfer_functions = []
 train_dataset = []
 distances = np.arange(0.3, 0.329 + 0.001, 1e-3)  # 30 cm to 33 cm, step 0.5 mm
