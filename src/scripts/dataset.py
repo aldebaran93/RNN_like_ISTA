@@ -152,6 +152,21 @@ def freq_noise_data():
     plt.show()
     return data
 
+def pink_noise(n_samples, n_signals, alpha=1.0):
+    freqs = np.fft.rfftfreq(n_samples)
+    freqs[0] = freqs[1]
+    scaling_factors = 1 / (freqs ** alpha)
+
+    noise = np.zeros((n_signals, n_samples))
+    for i in range(n_signals):
+        random_phases = np.exp(2j * np.pi * np.random.rand(len(freqs)))
+        amplitude_spectrum = np.random.randn(len(freqs)) * scaling_factors
+        spectrum = amplitude_spectrum * random_phases
+        signal = np.fft.irfft(spectrum, n=n_samples)
+        noise[i] = signal
+
+    return noise
+
 data = loadmat('noTXVoltage.mat')['firstchannel']
 #data = spectrum
 trace_counts = [10, 100, 1000]
@@ -211,6 +226,9 @@ val_data_multi, val_peak_positions = multi_pulse(val_train)
 val_data_multi_noise = awgn(val_data_multi, snr_db=60)
 val_dataset = np.concatenate([val_train, val_data_amp, val_data_multi, val_data_multi_noise], axis=0)
 val_dataset = shuffle(val_dataset, random_state=42)
+noise = pink_noise(n_samples=3528, n_signals=val_dataset.shape[0], alpha=1.0)
+noise_level = 1
+val_dataset = val_dataset + noise_level * noise
 
 import numpy as np
 import matplotlib.pyplot as plt
