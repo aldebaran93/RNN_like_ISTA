@@ -152,8 +152,8 @@ def freq_noise_data():
     plt.show()
     return data
 
-#data = mat['firstchannel']
-data = spectrum
+data = loadmat('noTXVoltage.mat')['firstchannel']
+#data = spectrum
 trace_counts = [10, 100, 1000]
 means = []
 stds = []
@@ -206,9 +206,9 @@ distances_2 = np.arange(0.3, 0.329 + 0.001, 500e-6)
 transfer_functions_val = calc_transfer_function(distances_2)
 val_data = np.real(np.fft.irfft(np.fft.rfft(trace) * transfer_functions_val))
 val_train = windowing(val_data)
-val_data_amp = awgn(varying_amplitude(val_train), snr_db=-5)
+val_data_amp = awgn(varying_amplitude(val_train), snr_db=60)
 val_data_multi, val_peak_positions = multi_pulse(val_train)
-val_data_multi_noise = awgn(val_data_multi, snr_db=-5)
+val_data_multi_noise = awgn(val_data_multi, snr_db=60)
 val_dataset = np.concatenate([val_train, val_data_amp, val_data_multi, val_data_multi_noise], axis=0)
 val_dataset = shuffle(val_dataset, random_state=42)
 

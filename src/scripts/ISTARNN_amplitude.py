@@ -12,12 +12,6 @@ from dataset import *
 
 # =============== 1. Funktionen ===============
 
-def get_trace_slice(t_vector, trace, t_min, t_max):
-    trace = dgmm(t_vector, 100e-12, -670.81e-12, -670.39e-12, 0.19, 0.24, -5.43, 3.82)
-    trace = trace.astype(np.complex128)
-    mask = (t_vector >= t_min) & (t_vector <= t_max)
-    return trace[mask]
-
 def soft_threshold(x, theta):
     return tf.sign(x) * tf.maximum(tf.abs(x) - theta, 0.0)
 
@@ -57,8 +51,8 @@ class RNNLikeISTA(tf.keras.Model):
         return x, peak_pred
 
 def metric(predicted_peaks, peak_positions_val, max_dist=100):
-    predicted_peaks = np.array(predicted_peaks)  # shape (n_signals, 2)
-    true_peaks = np.array(peak_positions_val)    # shape (n_signals, 2)
+    predicted_peaks = np.array(predicted_peaks)
+    true_peaks = np.array(peak_positions_val)
 
     all_y_true = []
     all_y_pred = []
@@ -136,30 +130,35 @@ def confusion_matrice(y_pred, y_true):
 # =============== 3. Trainings- und Validierungsdaten ===============
 
 peak_positions_train = tf.convert_to_tensor(np.argmax(train_dataset, axis=1), dtype=tf.float32)
+
+def get_peaks(signal_array, max_peaks=2):
+    num_signals = signal_array.shape[0]
+    peak_positions = np.zeros((num_signals, max_peaks), dtype=int)  # Initialize with 0
+    
+    for i in range(num_signals):
+        signal = signal_array[i]
+
+        # Find positive and negative peaks
+        pos_peaks, _ = find_peaks(signal)
+        neg_peaks, _ = find_peaks(-signal)
+        
+        # Combine and sort by absolute amplitude
+        all_peaks = np.concatenate((pos_peaks, neg_peaks))
+        all_amplitudes = np.abs(signal[all_peaks])
+        
+        if len(all_peaks) > 0:
+            top_indices = np.argsort(all_amplitudes)[::-1][:max_peaks]
+            top_peaks = all_peaks[top_indices]
+            peak_positions[i, :len(top_peaks)] = np.sort(top_peaks)  # sort by time
+        # else: remains as zeros
+        if len(top_peaks) == 2:
+            val1, val2 = np.abs(signal[top_peaks[0]]), np.abs(signal[top_peaks[1]])
+            if val2 < 1 * val1:
+                top_peaks = top_peaks[:1]  # keep only the stronger one
+    
+    return peak_positions
+        
 peak_positions_val = tf.convert_to_tensor(np.argmax(val_dataset, axis=1), dtype=tf.float32)
-
-signal_array = val_dataset
-
-num_signals = signal_array.shape[0]
-peak_positions_val = np.zeros((num_signals, 2), dtype=int)  # initialized to 0
-
-for i in range(num_signals):
-    signal = signal_array[i]
-    
-    # Find peaks with height > 2
-    peaks, properties = find_peaks(signal, height=2)
-    
-    # If there are peaks, sort by corresponding signal value (descending)
-    if len(peaks) > 0:
-        peak_values = signal[peaks]
-        sorted_indices = np.argsort(peak_values)[::-1]  # sort descending
-        
-        top_peaks = peaks[sorted_indices[:2]]  # take up to 2 indices
-        
-        # Fill the result (padded with zero if only one or none)
-        peak_positions_val[i, :len(top_peaks)] = top_peaks
-        
-peak_positions_val = tf.convert_to_tensor(peak_positions_val, dtype=tf.float32)
 
 # =============== 4. Modell Setup ===============
 np.random.seed(42)
@@ -225,38 +224,14 @@ reconstructed_pulses, predicted_peaks = model(val_dataset)
 reconstructed_pulses = reconstructed_pulses.numpy()
 predicted_peaks = predicted_peaks.numpy()
 
-# Your signal array: shape (214, 3528)
-# signal_array = np.load("your_data.npy")
-signal_array = reconstructed_pulses
-
-num_signals = signal_array.shape[0]
-peak_indices_array = np.zeros((num_signals, 2), dtype=int)  # initialized to 0
-
-for i in range(num_signals):
-    signal = signal_array[i]
-    
-    # Find peaks with height > 2
-    peaks, properties = find_peaks(signal, height=2)
-    
-    # If there are peaks, sort by corresponding signal value (descending)
-    if len(peaks) > 0:
-        peak_values = signal[peaks]
-        sorted_indices = np.argsort(peak_values)[::-1]  # sort descending
-        
-        top_peaks = peaks[sorted_indices[:2]]  # take up to 2 indices
-        
-        # Fill the result (padded with zero if only one or none)
-        peak_indices_array[i, :len(top_peaks)] = top_peaks
-
-# Result: peak_indices_array of shape (214, 2), containing the time positions of the peaks
-
+pred_peak = get_peaks(reconstructed_pulses)
 
 os.makedirs("plots/RNN_like_ISTA", exist_ok=True)
 
 for row_idx in range(val_dataset.shape[0]):
     plt.figure(figsize=(10,5))
     signal = val_dataset[row_idx]
-    peak_indices = peak_indices_array[row_idx]
+    peak_indices = pred_peak[row_idx]
     plt.figure()
     plt.plot(signal, label="Signal")
     for idx in peak_indices:
@@ -276,12 +251,14 @@ plt.grid()
 plt.legend()
 plt.show()
 
-mae = tf.reduce_mean(tf.abs(peak_indices_array - peak_positions_val.numpy()))
+peak_positions_val = get_peaks(val_dataset)
+peak_positions_val = tf.convert_to_tensor(peak_positions_val, dtype=tf.float32)
+mae = tf.reduce_mean(tf.abs(pred_peak - peak_positions_val.numpy()))
 print("===============================================")
 print(f"Peak Prediction MAE: {mae.numpy():.2f} samples")
 # =============== 9. Metrik: Trefferquote innerhalb ±5 Samples ===============
 tolerance = 100
-errors = np.abs(peak_indices_array - peak_positions_val.numpy())
+errors = np.abs(pred_peak - peak_positions_val.numpy())
 correct_within_tolerance = np.sum(errors <= tolerance)
 total = np.count_nonzero(peak_positions_val) #len(errors)
 accuracy_within_tolerance = correct_within_tolerance / total
@@ -289,5 +266,5 @@ print(f"Peaks innerhalb ±{tolerance} Samples korrekt: {correct_within_tolerance
 print(f"Trefferquote innerhalb ±{tolerance} Samples: {accuracy_within_tolerance * 100:.2f}%")
 print("===============================================")
 
-y_pred, y_true, metrics = metric(peak_indices_array, peak_positions_val)
+y_pred, y_true, metrics = metric(pred_peak, peak_positions_val)
 confusion_matrice(y_pred, y_true)
