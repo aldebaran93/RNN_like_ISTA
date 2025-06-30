@@ -10,6 +10,8 @@ from absorption_spectrum import *
 from sklearn.utils import shuffle
 import tensorflow as tf
 import scipy
+import matplotlib.pyplot as plt
+from scipy.io import loadmat
 
 def get_trace_slice(t_vector, trace, t_min, t_max):
     trace = dgmm(t_vector, 100e-12, -670.81e-12, -670.39e-12, 0.19, 0.24, -5.43, 3.82)
@@ -124,6 +126,64 @@ def extract_data():
     print("Standard deviation value is: ", std_value)
     return firstchannel, mean_value, std_value
     
+def freq_noise_data():
+    # Load the .mat file (assumes variable name is 'firstchannel')
+    mat = loadmat('noTXVoltage.mat')
+    data = mat['firstchannel'][0]  # Assuming you want the first row
+    
+    # Sampling information
+    Ts = 33.3333e-15  # Sampling time = 33.3333 fs
+    fs = 1 / Ts       # Sampling frequency in Hz
+    N = len(data)     # Number of samples
+    
+    # Time and frequency vectors
+    freqs = np.fft.fftshift(np.fft.fftfreq(N, Ts))
+    spectrum = np.fft.fftshift(np.fft.fft(data))
+    
+    # Plot the magnitude spectrum (in THz)
+    plt.figure(figsize=(10, 5))
+    plt.plot(freqs * 1e-12, np.abs(spectrum))  # Convert Hz to THz
+    plt.xlabel('Frequency (THz)')
+    plt.ylabel('Magnitude')
+    plt.title('Spectrum of the Signal')
+    plt.grid(True)
+    plt.xlim(-0.02,0.02)
+    plt.tight_layout()
+    plt.show()
+    return data
+
+#data = mat['firstchannel']
+data = spectrum
+trace_counts = [10, 100, 1000]
+means = []
+stds = []
+for n in trace_counts:
+    segment = data[:n, :]  # z. B. (10, 3000), (100, 3000), ...
+    
+    mean = np.mean(segment)
+    std = np.std(segment)
+    
+    print(f"{n} Traces:")
+    print(f"→ Mittelwert: {mean:.6f}")
+    print(f"→ Standardabweichung: {std:.6f}\n")
+steps = np.arange(10, 1001, 10)
+for n in steps:
+    subset = data[:n, :]  # erste n Messungen
+    means.append(np.mean(subset))
+    stds.append(np.std(subset))
+
+plt.figure(figsize=(10, 6))
+plt.plot(steps, means, label='Mittelwert', marker='o')
+plt.plot(steps, stds, label='Standardabweichung', marker='s')
+plt.xlabel("Anzahl der Traces")
+plt.ylabel("Wert")
+plt.title("Frequenzbereeich Verlauf von Mittelwert und Standardabweichung mit wachsender Anzahl von Traces")
+plt.grid(True)
+plt.legend()
+plt.tight_layout()
+plt.show()
+        
+
 # Training data
 test_data, mean_value, std_value = extract_data()
 transfer_functions = []
@@ -151,4 +211,73 @@ val_data_multi, val_peak_positions = multi_pulse(val_train)
 val_data_multi_noise = awgn(val_data_multi, snr_db=-5)
 val_dataset = np.concatenate([val_train, val_data_amp, val_data_multi, val_data_multi_noise], axis=0)
 val_dataset = shuffle(val_dataset, random_state=42)
+
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.signal import welch
+from scipy.optimize import curve_fit
+
+# === PARAMETER ===
+Ts = 33.3333e-15             # Abtastperiode in Sekunden
+fs = 1 / Ts                  # Abtastrate in Hz (~30 THz)
+nperseg = 1024               # Länge der Welch-Fenster
+
+# === DATEN LADEN ===
+# Wähle den richtigen Ladebefehl je nach Format
+# traces = np.load("rauschen.npy")          # für .npy-Datei
+# traces = np.genfromtxt("rauschen.csv", delimiter=',')  # für .csv
+# from scipy.io import loadmat
+traces = loadmat("noTXVoltage.mat")['firstchannel']       # für .mat
+
+# === PSD FÜR JEDE SPUR BERECHNEN ===
+psd_list = []
+
+for trace in traces:
+    f, Pxx = welch(trace, fs=fs, nperseg=nperseg)
+    psd_list.append(Pxx)
+
+psd_list = np.array(psd_list)
+psd_mean = np.mean(psd_list, axis=0)
+
+# === PSD PLOT ===
+plt.figure(figsize=(10, 5))
+plt.loglog(f / 1e12, psd_mean, label="Mittlere PSD")
+plt.xlabel("Frequenz [THz]")
+plt.ylabel("PSD [V²/Hz]")
+plt.title("Gemittelte PSD über 1000 THz-Rauschtraces")
+plt.grid(True)
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+# === FIT: PSD ~ A / f^alpha + N0 ===
+def powerlaw_psd(f, A, alpha, N0):
+    return A / (f**alpha + 1e-20) + N0
+
+# Fit ohne f=0 (vermeide Division durch 0)
+popt, _ = curve_fit(powerlaw_psd, f[1:], psd_mean[1:], p0=[1e-22, 1, 1e-24])
+A_fit, alpha_fit, N0_fit = popt
+
+print(f"Erkannte Rauschform:")
+print(f"  ➤ A     = {A_fit:.2e}")
+print(f"  ➤ alpha = {alpha_fit:.2f} → {'weißes Rauschen' if np.isclose(alpha_fit, 0, atol=0.2) else '1/f-Rauschen' if np.isclose(alpha_fit, 1, atol=0.2) else '1/f²-Rauschen' if np.isclose(alpha_fit, 2, atol=0.2) else 'gemischt/unbekannt'}")
+print(f"  ➤ N0    = {N0_fit:.2e}")
+
+# === FIT-PLOT ===
+psd_fit = powerlaw_psd(f, *popt)
+
+plt.figure(figsize=(10, 5))
+plt.loglog(f / 1e12, psd_mean, label='Gemittelte PSD')
+plt.loglog(f / 1e12, psd_fit, '--', label=f'Fit: $A/f^{{{alpha_fit:.2f}}} + N_0$')
+plt.xlabel("Frequenz [THz]")
+plt.ylabel("PSD [V²/Hz]")
+plt.title("Rauschanalyse per Power-Law-Fit")
+plt.ylim(10e-21, 0.9e-17)
+plt.grid(True)
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+
+
 
