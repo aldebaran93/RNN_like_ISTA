@@ -19,19 +19,9 @@ def get_trace_slice(t_vector, trace, t_min, t_max):
     mask = (t_vector >= t_min) & (t_vector <= t_max)
     return trace[mask]
 
-def calc_transfer_function(distances):
-    transfer_functions = []
-    for distance in distances:
-        tfct = np.exp(distance * 1j * complex_refractive_index * w_vector / speed_of_light) * \
-               np.exp(distance * 1j * 1.0027 * w_vector / speed_of_light)
-        tfct = np.abs(tfct) * np.exp(-1j * np.angle(tfct))
-        transfer_functions.append(tfct)
-    transfer_functions = np.array(transfer_functions)
-    return transfer_functions
-    
 def windowing(data):
-    window_size = 3528
-    threshold = 1
+    window_size = 12500
+    threshold = 0
     pulse_windows, pulse_positions = [], []
 
     for seq in data:
@@ -152,20 +142,29 @@ def freq_noise_data():
     plt.show()
     return data
 
-def pink_noise(n_samples, n_signals, alpha=1.0):
+def pink_noise(signal_array, alpha=1.0, relative_amplitude=0.01):
+    n_signals, n_samples = signal_array.shape
     freqs = np.fft.rfftfreq(n_samples)
-    freqs[0] = freqs[1]
+    freqs[0] = freqs[1]  # avoid div by 0
     scaling_factors = 1 / (freqs ** alpha)
 
-    noise = np.zeros((n_signals, n_samples))
+    noise = np.zeros_like(signal_array)
+
     for i in range(n_signals):
         random_phases = np.exp(2j * np.pi * np.random.rand(len(freqs)))
         amplitude_spectrum = np.random.randn(len(freqs)) * scaling_factors
         spectrum = amplitude_spectrum * random_phases
         signal = np.fft.irfft(spectrum, n=n_samples)
-        noise[i] = signal
+
+        # Normalize noise to unit std
+        signal /= np.std(signal)
+
+        # Scale noise to relative amplitude of original signal
+        signal_amplitude = np.max(np.abs(signal_array[i]))
+        noise[i] = signal * signal_amplitude * relative_amplitude
 
     return noise
+
 
 data = loadmat('noTXVoltage.mat')['firstchannel']
 #data = spectrum
@@ -226,9 +225,118 @@ val_data_multi, val_peak_positions = multi_pulse(val_train)
 val_data_multi_noise = awgn(val_data_multi, snr_db=60)
 val_dataset = np.concatenate([val_train, val_data_amp, val_data_multi, val_data_multi_noise], axis=0)
 val_dataset = shuffle(val_dataset, random_state=42)
-noise = pink_noise(n_samples=3528, n_signals=val_dataset.shape[0], alpha=1.0)
-noise_level = 1
-val_dataset = val_dataset + noise_level * noise
+relative_amplitude = 0.01  # e.g., noise will be 1% of signal amplitude
+noise = pink_noise(val_dataset, alpha=1.0, relative_amplitude=relative_amplitude)
+#noise_level = 1
+val_dataset = val_dataset + noise
+
+def metric(predicted_peaks, peak_positions_val, max_dist=100):
+    predicted_peaks = np.array(predicted_peaks)
+    true_peaks = np.array(peak_positions_val)
+
+    all_y_true = []
+    all_y_pred = []
+
+    n_signals = predicted_peaks.shape[0]
+
+    for row_idx in range(n_signals):
+        preds = predicted_peaks[row_idx]
+        trues = true_peaks[row_idx]
+        matched_true = set()
+
+        y_true = []
+        y_pred = []
+
+        # Evaluate predicted peaks for this signal
+        for pred in preds:
+            if pred == 0:
+                continue  # ignore zero placeholders
+            match_found = False
+            for i, true in enumerate(trues):
+                if true == 0:
+                    continue
+                if i not in matched_true and abs(pred - true) <= max_dist:
+                    match_found = True
+                    matched_true.add(i)
+                    break
+            if match_found:
+                y_true.append(1)  # correct match
+                y_pred.append(1)
+            else:
+                y_true.append(0)  # false positive
+                y_pred.append(1)
+
+        # Add false negatives: unmatched true peaks
+        for i, true in enumerate(trues):
+            if true == 0:
+                continue
+            if i not in matched_true:
+                y_true.append(1)  # missed true peak
+                y_pred.append(0)
+
+        all_y_true.extend(y_true)
+        all_y_pred.extend(y_pred)
+
+    # Compute and print metrics
+    precision = precision_score(all_y_true, all_y_pred)
+    recall = recall_score(all_y_true, all_y_pred)
+    f1 = f1_score(all_y_true, all_y_pred)
+
+    print(f"Precision: {precision:.4f}, Recall: {recall:.4f}, F1 Score: {f1:.4f}")
+    return all_y_pred, all_y_true, (precision, recall, f1)
+
+def confusion_matrice(y_pred, y_true):
+
+    # Get raw confusion matrix
+    cm = confusion_matrix(y_true, y_pred)
+    
+    # Convert to percentages
+    cm_percent = cm / np.sum(cm) * 100
+    
+    # Create annotated labels
+    labels = np.array([["{0:.4f}%".format(val) for val in row] for row in cm_percent])
+    
+    # Plotting
+    plt.figure(figsize=(6, 5))
+    sns.heatmap(cm_percent, annot=labels, fmt='', cmap='Blues', cbar=True,
+                xticklabels=["Present", "Absent"],
+                yticklabels=["Present", "Absent"])
+    
+    plt.xlabel("Predicted label")
+    plt.ylabel("True label")
+    plt.title("(a)", loc='center', fontsize=12)
+    plt.tight_layout()
+    plt.show()
+# =============== 3. Trainings- und Validierungsdaten ===============
+
+peak_positions_train = tf.convert_to_tensor(np.argmax(train_dataset, axis=1), dtype=tf.float32)
+
+def get_peaks(signal_array, max_peaks=2):
+    num_signals = signal_array.shape[0]
+    peak_positions = np.zeros((num_signals, max_peaks), dtype=int)  # Initialize with 0
+    
+    for i in range(num_signals):
+        signal = signal_array[i]
+
+        # Find positive and negative peaks
+        pos_peaks, _ = find_peaks(signal)
+        neg_peaks, _ = find_peaks(-signal)
+        
+        # Combine and sort by absolute amplitude
+        all_peaks = np.concatenate((pos_peaks, neg_peaks))
+        all_amplitudes = np.abs(signal[all_peaks])
+        
+        if len(all_peaks) > 0:
+            top_indices = np.argsort(all_amplitudes)[::-1][:max_peaks]
+            top_peaks = all_peaks[top_indices]
+            peak_positions[i, :len(top_peaks)] = np.sort(top_peaks)  # sort by time
+        # else: remains as zeros
+        if len(top_peaks) == 2:
+            val1, val2 = np.abs(signal[top_peaks[0]]), np.abs(signal[top_peaks[1]])
+            if val2 < 1 * val1:
+                top_peaks = top_peaks[:1]  # keep only the stronger one
+    
+    return peak_positions
 
 import numpy as np
 import matplotlib.pyplot as plt
